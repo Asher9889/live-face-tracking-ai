@@ -1,0 +1,1 @@
+CAMERA_API_URL = "https://live-face-tracker.mssplonline.in/api/v1/cameras"
