@@ -3,10 +3,11 @@ import time
 import cv2
 from typing import List
 
-from app.camera import CameraConfig, frame_queue
+from app.camera import CameraConfig, FrameMessage
+from app.camera.frame_queue import frame_queue
 
 
-def start_camera_threads(cameras: List[CameraConfig]) -> None: 
+def start_camera_threads(cameras: List[CameraConfig]) -> None:  
     """
     Spawn one capture thread per camera.
     """
@@ -28,7 +29,6 @@ def _camera_loop(cam: CameraConfig) -> None:
     """
     Capture frames from RTSP and push to frame queue.
     """
-
     print(f"[Camera] Connecting → {cam.code}")
 
     cap = cv2.VideoCapture(cam.rtsp_url)
@@ -39,7 +39,9 @@ def _camera_loop(cam: CameraConfig) -> None:
 
     print(f"[Camera] ✅ Connected → {cam.code}")
 
-    frame_count = 0
+    target_fps = cam.ai_fps or 25
+    interval = 1.0 / target_fps
+    last_processed = 0.0
     last_log = time.time()
 
     while True:
@@ -49,22 +51,22 @@ def _camera_loop(cam: CameraConfig) -> None:
             time.sleep(2)
             continue
 
-        frame_count += 1
-
-        # FPS throttling
-        if frame_count % 4 != 0:
+        # Rate limiting based on Time
+        # Dynamic FPS throttle
+        now = time.time()
+        if now - last_processed < interval:
             continue
 
         ret, frame = cap.retrieve()
         if not ret:
             continue
 
-        # ===== Here later we will push frame to queue =====
+        last_processed = now
 
-        frame_queue.push(camera_code=cam.code, frame=frame)
-    
+        # push frame to queue
+        frame_queue.push(FrameMessage(camera_code=cam.code, frame=frame, timestamp=now))
+
         # Heartbeat
-        now = time.time()
         if now - last_log > 3:
-            print(f"[Camera] {cam.code} receiving frames...")
+            # print(f"[Camera] {cam.code} receiving frames...")
             last_log = now

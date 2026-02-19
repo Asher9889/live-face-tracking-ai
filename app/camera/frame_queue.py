@@ -3,7 +3,7 @@ from typing import Optional
 from .types import FrameMessage
 
 # Max frames buffer (tune later)
-MAX_QUEUE_SIZE = 100
+MAX_QUEUE_SIZE = 250
 
 class FrameQueue:
     """

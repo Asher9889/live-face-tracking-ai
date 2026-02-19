@@ -1,7 +1,8 @@
 import threading
 import time
 
-from app.camera import fetch_cameras
+from app.camera import fetch_cameras, start_camera_threads
+from app.ai import start_batch_processor
 # from app.camera.worker import start_camera_threads
 # from app.ai.batch_processor import start_batch_processor
 # from app.recognition.engine import start_recognition_engine
@@ -21,14 +22,14 @@ def main():
 
         # Start camera capture
         print("\n📷 Starting camera workers...")
-        # start_camera_threads(cameras)
+        start_camera_threads(cameras)
 
-        # # Start AI batch processor
-        # print("🧠 Starting AI batch processor...")
-        # threading.Thread(
-        #     target=start_batch_processor,
-        #     daemon=True
-        # ).start()
+        # Start AI batch processor
+        print("🧠 Starting AI batch processor...")
+        threading.Thread(
+            target=start_batch_processor,
+            daemon=True
+        ).start()
 
         # Start recognition engine
         # print("🧩 Starting recognition engine...")

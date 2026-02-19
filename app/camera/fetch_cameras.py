@@ -68,18 +68,20 @@ def fetch_cameras() -> List[CameraConfig]:
             creds.get("password", "")
         )
 
-        config = {
-            "code": cam["code"],
-            "name": cam.get("name", ""),
-            "gate_type": cam.get("gateType", "UNKNOWN"),
-            "rtsp_url": rtsp_url,
-            "ai_fps": cam.get("streamConfig", {}).get("aiFps", 10),
-            "roi": cam.get("roi", {}),
-        }
+        config = CameraConfig(
+            code=cam["code"],
+            name=cam.get("name", ""),
+            gate_type=cam.get("gateType", "UNKNOWN"),
+            rtsp_url=rtsp_url,
+            ai_fps=cam.get("streamConfig", {}).get("aiFps", 10),
+            roi=cam.get("roi", {}),
+        )
+
 
         final_configs.append(config)
 
         # Log without password
-        print(f"  → {config['code']} ({config['gate_type']})")
+        print(f"  → {config.code} ({config.gate_type})")
 
     return final_configs
+
