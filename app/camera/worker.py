@@ -5,6 +5,7 @@ from typing import List
 
 from app.camera import CameraConfig, FrameMessage
 from app.camera.frame_queue import frame_queue
+from app.camera.helper import motion_score, is_blurry
 
 
 def start_camera_threads(cameras: List[CameraConfig]) -> None:  
@@ -39,16 +40,24 @@ def _camera_loop(cam: CameraConfig) -> None:
 
     print(f"[Camera] ✅ Connected → {cam.code}")
 
-    target_fps = cam.ai_fps or 25
+    target_fps =  15 #cam.ai_fps or 25
     interval = 1.0 / target_fps
+
     last_processed = 0.0
     last_log = time.time()
 
     while True:
         # Keep buffer fresh
+        # if not cap.grab():
+        #     print(f"[Camera] ⚠️ Stream lost → {cam.code}")
+        #     time.sleep(2)
+        #     continue
+
         if not cap.grab():
             print(f"[Camera] ⚠️ Stream lost → {cam.code}")
+            cap.release()
             time.sleep(2)
+            cap = cv2.VideoCapture(cam.rtsp_url)
             continue
 
         # Rate limiting based on Time
@@ -57,6 +66,7 @@ def _camera_loop(cam: CameraConfig) -> None:
         if now - last_processed < interval:
             continue
 
+        # Decode frame
         ret, frame = cap.retrieve()
         if not ret:
             continue

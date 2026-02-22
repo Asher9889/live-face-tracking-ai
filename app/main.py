@@ -20,11 +20,15 @@ def main():
             print("❌ No cameras found. Exiting.")
             return
 
-        # Start camera capture
+        """
+        Spawn thread for each camera and push frames to queue
+        """
         print("\n📷 Starting camera workers...")
         start_camera_threads(cameras)
 
-        # Start AI batch processor
+        """
+        It will process frames in batches 
+        """
         print("🧠 Starting AI batch processor...")
         threading.Thread(
             target=start_batch_processor,

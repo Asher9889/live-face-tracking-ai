@@ -1,13 +1,16 @@
 import time
+from app.ai.debug_face_saver import save_faces
+from app.ai.face_filter import filter_and_crop
 from app.camera.frame_queue import frame_queue
 from typing import List
 from app.camera import FrameMessage
-from app.ai.face_detector import FaceDetector
+from app.ai.insight_detector import InsightFaceDetector
+from app.camera.types import Detection
 
 BATCH_SIZE = 8
 BATCH_TIMEOUT = 0.02  # 20ms
 
-face_detector = FaceDetector("models/scrfd/scrfd_10g_bnkps.onnx")
+face_detector = InsightFaceDetector()
 
 def start_batch_processor() -> None:
     """
@@ -22,7 +25,7 @@ def start_batch_processor() -> None:
 
         start_time = time.time()
 
-        # Collect frames until batch full OR timeout
+        # Collect frames for up to 20ms OR until we have 8 frames — whichever comes first.
         while len(batch) < BATCH_SIZE:
             remaining = BATCH_TIMEOUT - (time.time() - start_time)
 
@@ -42,30 +45,52 @@ def start_batch_processor() -> None:
 
 def _process_batch(batch: List[FrameMessage]) -> None:
     """
-    Real pipeline stages:
-    1️⃣ Extract frames
-    2️⃣ Run detection
-    3️⃣ Process detections
+    Real pipeline stages: 
+    Extract frames
+    Run detection
+    Process detections
     """ 
 
-    frames = [msg.frame for msg in batch]
-    camera_codes = [msg.camera_code for msg in batch]
-    timestamps = [msg.timestamp for msg in batch]
+    frames = []
+    camera_codes = []
+    timestamps = []
+
+    for msg in batch:
+        frames.append(msg.frame)
+        camera_codes.append(msg.camera_code)
+        timestamps.append(msg.timestamp)
 
     # 🔜 Next step will plug detector here
-    detections = _run_detection(frames)
+    detections = _run_detection(frames, camera_codes, timestamps)
 
-    # Temporary logging
-    face_count = sum(len(d) for d in detections)
-    print(f"[AI] Batch size={len(frames)} | faces={face_count}")
+    face_crops = filter_and_crop(detections)
+
+    # save_faces(face_crops)
+
+    print(f"[AI] usable faces={len(face_crops)}")
 
 
-def _run_detection(frames):
-    results = []
 
-    for frame in frames:
-        faces = face_detector.infer(frame)
-        results.append(faces)
+def _run_detection(frames, camera_codes, timestamps):
+    detections = []
 
-    return results
+    for frame, cam_code, ts in zip(frames, camera_codes, timestamps):
+        faces = face_detector.detect(frame) or []
+
+        print(f"[AI] Detected {len(faces)} faces")
+        for face in faces:
+            detections.append(
+                Detection(
+                    camera_code=cam_code,
+                    timestamp=ts,
+                    frame=frame,
+                    bbox=face["bbox"],
+                    landmarks=face["landmarks"],
+                    score=face["score"],
+                    pose=face["pose"],
+                    age=face["age"],
+                    gender=face["gender"]
+                )
+            )
+    return detections
 
