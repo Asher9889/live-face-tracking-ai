@@ -6,8 +6,8 @@ class InsightFaceDetector:
 
     MIN_FACE_SIZE = 30
     MIN_SCORE = 0.5
-    MAX_YAW = 45
-    MAX_PITCH = 45
+    # MAX_YAW = 45
+    # MAX_PITCH = 45
 
     def __init__(self):
         self.app = FaceAnalysis(
@@ -68,7 +68,7 @@ class InsightFaceDetector:
             bbox = face.bbox.astype(np.int32)
             score = float(face.det_score)
 
-            if score < self.MIN_SCORE:
+            if score < self.MIN_SCORE: 
                 continue
 
             width = bbox[2] - bbox[0]
@@ -78,7 +78,10 @@ class InsightFaceDetector:
             if size < self.MIN_FACE_SIZE:
                 continue
 
-            yaw, pitch, roll = face.pose if face.pose is not None else (0,0,0)
+            if face.pose is not None:
+                yaw, pitch, roll = face.pose
+            else:
+                yaw, pitch, roll = (0,0,0)
 
             # if abs(yaw) > self.MAX_YAW or abs(pitch) > self.MAX_PITCH:
             #     continue
@@ -100,4 +103,4 @@ class InsightFaceDetector:
         if not results:
             return []
 
-        return self.nms(results)
+        return self.nms(results) # for avoiding duplicate faces for same bbox
