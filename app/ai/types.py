@@ -14,6 +14,7 @@ class Detection:
     pose: Tuple[float, float, float]
     age: int | None
     gender: int | None
+    track_id: int | None = None
 
 
 @dataclass

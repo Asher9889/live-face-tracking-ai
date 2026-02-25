@@ -1,7 +1,10 @@
 import time
 from app.ai.align_faces import align_faces
 from app.ai.debug_face_saver import save_faces
+from app.ai.debug_tracking import debug_tracking
 from app.ai.face_filter import filter_and_crop
+from app.ai.remove_duplicate_detections import remove_duplicate_detections
+from app.ai.tracker_service import ByteTrackerService
 from app.camera.frame_queue import frame_queue
 from typing import List
 from app.camera import FrameMessage
@@ -12,6 +15,7 @@ BATCH_SIZE = 8
 BATCH_TIMEOUT = 0.02  # 20ms
 
 face_detector = InsightFaceDetector()
+tracker_service = ByteTrackerService()
 
 def start_batch_processor() -> None:
     """
@@ -48,8 +52,6 @@ def _process_batch(batch: List[FrameMessage]) -> None:
     """
     Real pipeline stages: 
     Extract frames
-    Run detection
-    Process detections
     """ 
 
     frames = []
@@ -61,18 +63,34 @@ def _process_batch(batch: List[FrameMessage]) -> None:
         camera_codes.append(msg.camera_code)
         timestamps.append(msg.timestamp)
 
-    # 🔜 Next step will plug detector here
+    # Face Detection
     detections = _run_detection(frames, camera_codes, timestamps)
 
-    face_crops = filter_and_crop(detections)
+    print(f"[AI] detections={len(detections)}")
 
-    aligned_faces = align_faces(face_crops)
+    # Remove duplicates detections
+    # detections = remove_duplicate_detections(detections)
+
+    # print("[AI] detections", len(detections))
+
+    # Tracking
+    # 🔥 2️⃣ Correct tracking (sequential)
+    tracked_detections = tracker_service.update_sequential(detections)
+
+    debug_tracking(tracked_detections)
+    # Debug
+    # print("[AI] track_ids", [d.track_id for d in tracked_detections])
+
+   
+    # face_crops = filter_and_crop(tracked_detections)
+
+    # aligned_faces = align_faces(tracked_detections) 
 
 
-    save_faces(aligned_faces)
-    print("[AI] aligned_faces", aligned_faces)
+    # save_faces(tracked_detections)
+    # print("[AI] aligned_faces", tracked_detections)
 
-    print(f"[AI] usable faces={len(aligned_faces)}")
+    # print(f"[AI] usable faces={len(aligned_faces)}")
 
 
 
@@ -82,7 +100,7 @@ def _run_detection(frames, camera_codes, timestamps):
     for frame, cam_code, ts in zip(frames, camera_codes, timestamps):
         faces = face_detector.detect(frame) or []
 
-        print(f"[AI] Detected {len(faces)} faces")
+        # print(f"[AI] Detected {cam_code} {len(faces)} faces")
         for face in faces:
             detections.append(
                 Detection(
@@ -98,4 +116,5 @@ def _run_detection(frames, camera_codes, timestamps):
                 )
             )
     return detections
+
 
