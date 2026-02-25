@@ -39,8 +39,8 @@ class InsightFaceDetector:
 
             # Pose filtering   
             yaw, pitch, roll = face.pose if face.pose is not None else (0,0,0)
-            age = int(face.age) if hasattr(face, "age") else None,
-            gender = int(face.gender) if hasattr(face, "gender") else None,
+            age = int(face.age) if hasattr(face, "age") else None
+            gender = int(face.gender) if hasattr(face, "gender") else None
 
             results.append({
                 "bbox": bbox,

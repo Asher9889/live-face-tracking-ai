@@ -1,5 +1,4 @@
 import cv2
-import numpy as np
 
 
 def is_blurry(image, threshold=80):

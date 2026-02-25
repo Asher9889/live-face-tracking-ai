@@ -11,3 +11,14 @@
 ### Camera Config
 
 
+
+
+Frame
+ → Detection (SCRFD)
+ → Filter
+ → Crop
+ → Padding
+ → Alignment
+ → Resize + Normalize
+ → Embedding (AdaFace)
+ → Tracking / Recognition

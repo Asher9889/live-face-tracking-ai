@@ -1,4 +1,5 @@
 import time
+from app.ai.align_faces import align_faces
 from app.ai.debug_face_saver import save_faces
 from app.ai.face_filter import filter_and_crop
 from app.camera.frame_queue import frame_queue
@@ -65,9 +66,13 @@ def _process_batch(batch: List[FrameMessage]) -> None:
 
     face_crops = filter_and_crop(detections)
 
-    # save_faces(face_crops)
+    aligned_faces = align_faces(face_crops)
 
-    print(f"[AI] usable faces={len(face_crops)}")
+
+    save_faces(aligned_faces)
+    print("[AI] aligned_faces", aligned_faces)
+
+    print(f"[AI] usable faces={len(aligned_faces)}")
 
 
 

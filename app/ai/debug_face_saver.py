@@ -1,39 +1,33 @@
 import os
 import cv2
 from datetime import datetime
+from typing import List
+from app.ai.types import FaceCrop
 
-SAVE_INTERVAL = 1  # save every 20 detections
-
+# SAVE_INTERVAL = 20  # save every N faces
 _counter = 0
 
-BASE_DIR = "debug_faces" 
+BASE_DIR = "debug_faces"
 
 
-def save_faces(frame, faces, camera_code):
+def save_faces(face_crops: List[FaceCrop]) -> None:
     global _counter
 
-    _counter += 1
-
-    if _counter % SAVE_INTERVAL != 0:
+    if not face_crops:
         return
 
-    if not faces:
-        return
+    for face in face_crops:
+        _counter += 1
 
-    cam_dir = os.path.join(BASE_DIR, camera_code)
-    os.makedirs(cam_dir, exist_ok=True)
+        # if _counter % SAVE_INTERVAL != 0:
+        #     continue
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
+        cam_dir = os.path.join(BASE_DIR, face.camera_code)
+        os.makedirs(cam_dir, exist_ok=True)
 
-    for i, face in enumerate(faces):
-        x1, y1, x2, y2 = face["bbox"]
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f")
 
-        crop = frame[y1:y2, x1:x2]
-
-        if crop.size == 0:
-            continue
-
-        filename = f"{timestamp}_{i}.jpg"
+        filename = f"{timestamp}.jpg"
         path = os.path.join(cam_dir, filename)
 
-        cv2.imwrite(path, crop)
+        cv2.imwrite(path, face.crop)  # or face.image depending on your field
