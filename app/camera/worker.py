@@ -111,7 +111,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 detections = []
 
             if cam.code == "entry_1":
-                print(f"[Camera {cam.code}] 🔍 Before DETECTION STAGE {len(detections)} faces")   
+                print(f"[Camera {cam.code}] 🔍 Before DETECTION STAGE {len(detections)} faces", detections)   
 
 
             # Convert to tracker format
