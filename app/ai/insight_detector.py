@@ -12,7 +12,9 @@ class InsightFaceDetector:
     def __init__(self):
         self.app = FaceAnalysis(
             name="buffalo_l",
-            providers=["CPUExecutionProvider"]
+            providers=["CUDAExecutionProvider"],
+            provider_options=[{}],
+            allowed_providers=['CUDAExecutionProvider']
         )
 
         self.app.prepare(ctx_id=0, det_size=(640, 640))
@@ -102,5 +104,5 @@ class InsightFaceDetector:
 
         if not results:
             return []
-
-        return self.nms(results) # for avoiding duplicate faces for same bbox
+        return results
+        # return self.nms(results) # for avoiding duplicate faces for same bbox

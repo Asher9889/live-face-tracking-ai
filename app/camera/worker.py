@@ -4,21 +4,27 @@ import cv2
 from typing import List
 import random
 from enum import Enum
+import numpy as np
 
+from app.ai.insight_detector import InsightFaceDetector
+from app.ai.tracker_service import ByteTrackerService
 from app.camera import CameraConfig, FrameMessage
 from app.camera.frame_queue import frame_queue
 from app.camera.helper import motion_score, is_blurry
 
+
+detector = InsightFaceDetector()
 class CameraState(str, Enum):
     CONNECTING = "CONNECTING"
     CONNECTED = "CONNECTED"
     RECONNECTING = "RECONNECTING"
     DOWN = "DOWN"
 
+
 def _open_capture(rtsp_url: str):
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    print("Camera FPS:", rtsp_url, cap.get(cv2.CAP_PROP_FPS))
     return cap
-
 
 def start_camera_threads(cameras: List[CameraConfig]) -> None:  
     """
@@ -37,59 +43,13 @@ def start_camera_threads(cameras: List[CameraConfig]) -> None:
 
         print(f"[Camera] Thread started → {cam.code}")
 
-
-# def _camera_loop(cam: CameraConfig) -> None:
-#     """
-#     Capture frames from RTSP and push to frame queue.
-#     """
-#     print(f"[Camera] Connecting → {cam.code}")
-
-#     cap = cv2.VideoCapture(cam.rtsp_url)
-
-#     if not cap.isOpened():
-#         print(f"[Camera] ❌ Failed to open stream → {cam.code}")
-#         return
-
-#     print(f"[Camera] ✅ Connected → {cam.code}")
-
-#     target_fps =  15
-#     interval = 1.0 / target_fps
-
-#     last_processed = 0.0
-#     last_log = time.time()
-
-#     while True:
-#         if not cap.grab():
-#             print(f"[Camera] ⚠️ Stream lost → {cam.code}")
-#             cap.release()
-#             time.sleep(2)
-#             cap = cv2.VideoCapture(cam.rtsp_url)
-#             continue
-
-#         # Rate limiting based on Time
-#         # Dynamic FPS throttle
-#         now = time.time()
-#         if now - last_processed < interval:
-#             continue
-
-#         # Decode frame
-#         ret, frame = cap.retrieve()
-#         if not ret:
-#             continue
-
-#         last_processed = now
-
-#         # push frame to queue
-#         frame_queue.push(FrameMessage(camera_code=cam.code, frame=frame, timestamp=now))
-
-#         # Heartbeat
-#         if now - last_log > 3:
-#             # print(f"[Camera] {cam.code} receiving frames...")
-#             last_log = now
-
-
 def _camera_loop(cam: CameraConfig) -> None:
     print(f"[Camera] Worker started → {cam.code}")
+
+    
+    tracker = ByteTrackerService(frame_rate=15, lost_track_buffer=30)
+    track_state = {}
+    track_identity = {}
 
     backoff = 1.0
     max_backoff = 30.0
@@ -101,6 +61,7 @@ def _camera_loop(cam: CameraConfig) -> None:
         print(f"[Camera] 🔌 Connecting → {cam.code}")
 
         cap = _open_capture(cam.rtsp_url)
+
 
         if not cap.isOpened():
             print(f"[Camera] ❌ Connect failed → {cam.code}")
@@ -131,19 +92,74 @@ def _camera_loop(cam: CameraConfig) -> None:
 
             ret, frame = cap.retrieve()
 
-            if not ret:
+            if not ret or frame is None:
                 continue
 
             last_processed = now
-
-            frame_queue.push(
-                FrameMessage(
-                    camera_code=cam.code,
-                    frame=frame,
-                    timestamp=now,
-                )
-            )
-
             if now - last_log > 5:
                 # print(f"[Camera] ❤️ Live → {cam.code}")
                 last_log = now
+
+
+            # =========================
+            # DETECTION STAGE
+            # =========================
+
+            detections = detector.detect(frame)
+            if detections is None:
+                detections = []
+
+            if cam.code == "entry_1":
+                print(f"[Camera {cam.code}] 🔍 Before DETECTION STAGE {len(detections)} faces")   
+
+
+            # Convert to tracker format
+            if len(detections) > 0:
+
+                boxes = np.asarray(
+                    [d["bbox"] for d in detections],
+                    dtype=np.float32   # IMPORTANT: float32
+                )
+
+                scores = np.asarray(
+                    [d["score"] for d in detections],
+                    dtype=np.float32
+                )
+
+                detection_meta = detections  # keep original metadata
+
+            else:
+                boxes = np.zeros((0, 4), dtype=np.float32)
+                scores = np.zeros((0,), dtype=np.float32)
+                detection_meta = []
+
+            if cam.code == "entry_1":
+                print(f"[Camera {cam.code}] 🔍 After DETECTION STAGE {len(detections)} faces")   
+
+
+            #------TRACKING STAGE------
+
+            tracks, lost_ids = tracker.update(boxes=boxes, scores=scores)
+
+            if cam.code == "entry_1":
+                print(f"[Camera {cam.code}] 🔍 Detected {len(tracks)} tracks", tracks)
+
+            # cleanup per-track state
+            for tid in lost_ids:
+                track_state.pop(tid, None)
+                track_identity.pop(tid, None)
+                print(f"[Camera {cam.code}] 🗑️ Track {tid} lost")
+
+            # for tid, track_box in tracks:
+            #     matched_det = None
+
+            #     for det in detection_meta:
+            #         if iou(det["bbox"], track_box) > 0.7:
+            #             matched_det = det
+            #             break
+
+            
+
+
+
+

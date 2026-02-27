@@ -1,4 +1,3 @@
-import threading
 import time
 
 from app.camera import fetch_cameras, start_camera_threads
@@ -6,7 +5,6 @@ from app.ai import start_batch_processor
 # from app.camera.worker import start_camera_threads
 # from app.ai.batch_processor import start_batch_processor
 # from app.recognition.engine import start_recognition_engine
-
 
 
 def main():
@@ -29,11 +27,11 @@ def main():
         """
         It will process frames in batches 
         """
-        print("🧠 Starting AI batch processor...")
-        threading.Thread(
-            target=start_batch_processor,
-            daemon=True
-        ).start()
+        # print("🧠 Starting AI batch processor...")
+        # threading.Thread(
+        #     target=start_batch_processor,
+        #     daemon=True
+        # ).start()
 
         # Start recognition engine
         # print("🧩 Starting recognition engine...")
@@ -49,7 +47,8 @@ def main():
             time.sleep(60)
 
     except KeyboardInterrupt:
-        print("\n🛑 Shutdown requested")
+        print("\n🛑 Shutdown requested") 
+        time.sleep(1) 
 
     except Exception as e:
         print(f"\n🔥 Fatal error: {e}")

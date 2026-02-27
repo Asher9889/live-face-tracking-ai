@@ -1,59 +1,80 @@
 import supervision as sv
 import numpy as np
-from collections import defaultdict
-from app.camera.types import Detection
 
 
 class ByteTrackerService:
-    def __init__(self):
-        self.trackers: dict[str, sv.ByteTrack] = {}
+    """
+    Per-camera tracker wrapper.
+    One instance per camera thread.
+    """
 
-    def _get_tracker(self, camera_code: str):
-        if camera_code not in self.trackers:
-            self.trackers[camera_code] = sv.ByteTrack()
-        return self.trackers[camera_code]
+    def __init__(
+        self,
+        frame_rate: int = 15,
+        track_activation_threshold: float = 0.20, 
+        lost_track_buffer: int = 30,  # 2 seconds at 15 FPS 
+        minimum_matching_threshold: float = 0.3
+    ):
+        self.tracker = sv.ByteTrack(
+            track_activation_threshold=track_activation_threshold,
+            lost_track_buffer=lost_track_buffer,
+            minimum_matching_threshold=minimum_matching_threshold,
+            frame_rate=frame_rate
+        )
+        
+        # Track IDs from previous frame to detect losses
+        self.previous_ids = set()
 
-    def update_sequential(self, detections: list[Detection]) -> list[Detection]:
+    def update(self, boxes, scores):
+        """
+        Update tracker with new detections.
+        
+        Args:
+            boxes: np.ndarray of shape (N, 4) with [x1, y1, x2, y2] format
+            scores: np.ndarray of shape (N,) with confidence scores
+            
+        Returns:
+            tracks: List of (track_id, bbox) tuples
+            lost_ids: Set of track IDs that were removed this frame
+        """
+        
+        # Handle empty detections
+        if boxes is None or len(boxes) == 0:
+            detections = sv.Detections.empty()
+        else:
+            # Ensure correct dtypes
+            detections = sv.Detections(
+                xyxy=boxes.astype(np.float32),
+                confidence=scores.astype(np.float32),
+                class_id=np.zeros(len(boxes), dtype=np.int32)
+            )
 
-        # Group by camera
-        by_camera = defaultdict(list)
-        for d in detections:
-            by_camera[d.camera_code].append(d)
+        # Update tracker
+        tracked = self.tracker.update_with_detections(detections)
 
+        # Extract active tracks
         results = []
+        current_ids = set()
 
-        # Process each camera independently
-        for cam_code, dets in by_camera.items():
+        for bbox, tid in zip(tracked.xyxy, tracked.tracker_id):
+            if tid is None:
+                continue
+            
+            tid = int(tid)
+            current_ids.add(tid)
+            
+            # Keep bbox as float32 for precision
+            results.append((tid, bbox))
 
-            tracker = self._get_tracker(cam_code)
+        # Calculate which tracks were lost this frame
+        lost_ids = self.previous_ids - current_ids
+        
+        # Update state for next frame
+        self.previous_ids = current_ids.copy()
 
-            # Group by timestamp (frame)
-            by_ts = defaultdict(list)
-            for d in dets:
-                by_ts[d.timestamp].append(d)
-
-            # Sort timestamps
-            sorted_ts = sorted(by_ts.keys())
-
-            # Sequential update
-            for ts in sorted_ts:
-
-                frame_dets = by_ts[ts]
-
-                xyxy = np.array([d.bbox for d in frame_dets])
-                confidence = np.array([d.score for d in frame_dets])
-                class_id = np.zeros(len(frame_dets))
-
-                sv_dets = sv.Detections(
-                    xyxy=xyxy,
-                    confidence=confidence,
-                    class_id=class_id
-                )
-
-                tracked = tracker.update_with_detections(sv_dets)
-
-                for det, tid in zip(frame_dets, tracked.tracker_id):
-                    det.track_id = int(tid) if tid is not None else None
-                    results.append(det)
-
-        return results
+        return results, lost_ids
+    
+    def reset(self):
+        """Reset tracker state (e.g., when reconnecting to camera)"""
+        self.tracker.reset()
+        self.previous_ids = set()

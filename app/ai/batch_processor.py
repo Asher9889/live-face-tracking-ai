@@ -69,7 +69,7 @@ def _process_batch(batch: List[FrameMessage]) -> None:
     print(f"[AI] detections={len(detections)}")
 
     # Remove duplicates detections
-    # detections = remove_duplicate_detections(detections)
+    detections = remove_duplicate_detections(detections)
 
     # print("[AI] detections", len(detections))
 
