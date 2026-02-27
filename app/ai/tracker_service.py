@@ -13,7 +13,7 @@ class ByteTrackerService:
         frame_rate: int = 15,
         track_activation_threshold: float = 0.20, 
         lost_track_buffer: int = 30,  # 2 seconds at 15 FPS 
-        minimum_matching_threshold: float = 0.3
+        minimum_matching_threshold: float = 0.2
     ):
         self.tracker = sv.ByteTrack(
             track_activation_threshold=track_activation_threshold,
@@ -67,12 +67,18 @@ class ByteTrackerService:
             results.append((tid, bbox))
 
         # Calculate which tracks were lost this frame
-        lost_ids = self.previous_ids - current_ids
+        # lost_ids = self.previous_ids - current_ids
         
+        # # Update state for next frame
+        # self.previous_ids = current_ids.copy()
+
+        # return results, lost_ids
+
         # Update state for next frame
         self.previous_ids = current_ids.copy()
 
-        return results, lost_ids
+        # Do NOT manually compute lost_ids
+        return results, set()
     
     def reset(self):
         """Reset tracker state (e.g., when reconnecting to camera)"""
