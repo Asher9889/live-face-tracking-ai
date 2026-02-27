@@ -55,7 +55,7 @@ def _camera_loop(cam: CameraConfig) -> None:
     backoff = 1.0
     max_backoff = 30.0
 
-    target_fps = 15
+    target_fps = 10
     interval = 1.0 / target_fps
 
     while True:
@@ -107,49 +107,57 @@ def _camera_loop(cam: CameraConfig) -> None:
             # DETECTION STAGE
             # =========================
 
-            detections = person_detector.detect(frame)
-            if detections is None:
-                detections = []
-
-            if cam.code == "entry_1":
-                print(f"[Camera {cam.code}] 🔍 Before DETECTION STAGE {len(detections)} faces", detections)   
 
 
-            # Convert to tracker format
-            if len(detections) > 0:
+            boxes, scores = person_detector.detect(frame)
 
-                boxes = np.asarray(
-                    [d["bbox"] for d in detections],
-                    dtype=np.float32   # IMPORTANT: float32
-                )
+            tracks = tracker.update(boxes, scores)
 
-                scores = np.asarray(
-                    [d["score"] for d in detections],
-                    dtype=np.float32
-                )
+            print(f"[Camera {cam.code}] 🔍 Detected {len(tracks)} tracks", tracks)
 
-                detection_meta = detections  # keep original metadata
+            # detections = person_detector.detect(frame)
+            # if detections is None:
+            #     detections = []
 
-            else:
-                boxes = np.zeros((0, 4), dtype=np.float32)
-                scores = np.zeros((0,), dtype=np.float32)
-                detection_meta = []
+            # if cam.code == "entry_1":
+            #     print(f"[Camera {cam.code}] 🔍 Before DETECTION STAGE {len(detections)} faces", detections)   
 
-            if cam.code == "entry_1":
-                print(f"[Camera {cam.code}] 🔍 After DETECTION STAGE {len(detections)} faces", detections)   
 
-            #------TRACKING STAGE------
+            # # Convert to tracker format
+            # if len(detections) > 0:
 
-            tracks, lost_ids = tracker.update(boxes=boxes, scores=scores)
+            #     boxes = np.asarray(
+            #         [d["bbox"] for d in detections],
+            #         dtype=np.float32   # IMPORTANT: float32
+            #     )
 
-            if cam.code == "entry_1":
-                print(f"[Camera {cam.code}] 🔍 Detected {len(tracks)} tracks", tracks)
+            #     scores = np.asarray(
+            #         [d["score"] for d in detections],
+            #         dtype=np.float32
+            #     )
 
-            # cleanup per-track state
-            for tid in lost_ids:
-                track_state.pop(tid, None)
-                track_identity.pop(tid, None)
-                print(f"[Camera {cam.code}] 🗑️ Track {tid} lost")
+            #     detection_meta = detections  # keep original metadata
+
+            # else:
+            #     boxes = np.zeros((0, 4), dtype=np.float32)
+            #     scores = np.zeros((0,), dtype=np.float32)
+            #     detection_meta = []
+
+            # if cam.code == "entry_1":
+            #     print(f"[Camera {cam.code}] 🔍 After DETECTION STAGE {len(detections)} faces", detections)   
+
+            # #------TRACKING STAGE------
+
+            # tracks, lost_ids = tracker.update(boxes=boxes, scores=scores)
+
+            # if cam.code == "entry_1":
+            #     print(f"[Camera {cam.code}] 🔍 Detected {len(tracks)} tracks", tracks)
+
+            # # cleanup per-track state
+            # for tid in lost_ids:
+            #     track_state.pop(tid, None)
+            #     track_identity.pop(tid, None)
+            #     print(f"[Camera {cam.code}] 🗑️ Track {tid} lost")
 
 
 
