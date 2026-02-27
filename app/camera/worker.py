@@ -7,6 +7,7 @@ from enum import Enum
 import numpy as np
 
 from app.ai.insight_detector import InsightFaceDetector
+from app.ai.person_detector import PersonDetector
 from app.ai.tracker_service import ByteTrackerService
 from app.camera import CameraConfig, FrameMessage
 from app.camera.frame_queue import frame_queue
@@ -46,7 +47,7 @@ def start_camera_threads(cameras: List[CameraConfig]) -> None:
 def _camera_loop(cam: CameraConfig) -> None:
     print(f"[Camera] Worker started → {cam.code}")
 
-    
+    person_detector = PersonDetector()
     tracker = ByteTrackerService(frame_rate=15, lost_track_buffer=30)
     track_state = {}
     track_identity = {}
@@ -106,7 +107,7 @@ def _camera_loop(cam: CameraConfig) -> None:
             # DETECTION STAGE
             # =========================
 
-            detections = detector.detect(frame)
+            detections = person_detector.detect(frame)
             if detections is None:
                 detections = []
 
@@ -136,7 +137,6 @@ def _camera_loop(cam: CameraConfig) -> None:
 
             if cam.code == "entry_1":
                 print(f"[Camera {cam.code}] 🔍 After DETECTION STAGE {len(detections)} faces", detections)   
-
 
             #------TRACKING STAGE------
 
