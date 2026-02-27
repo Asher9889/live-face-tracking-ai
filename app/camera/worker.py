@@ -83,6 +83,7 @@ def _camera_loop(cam: CameraConfig) -> None:
             if not grabbed:
                 print(f"[Camera] ⚠️ Stream lost → {cam.code}")
                 cap.release()
+                # tracker.reset()
                 break  # go to reconnect loop
 
             now = time.time()
@@ -150,13 +151,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 track_identity.pop(tid, None)
                 print(f"[Camera {cam.code}] 🗑️ Track {tid} lost")
 
-            # for tid, track_box in tracks:
-            #     matched_det = None
 
-            #     for det in detection_meta:
-            #         if iou(det["bbox"], track_box) > 0.7:
-            #             matched_det = det
-            #             break
 
             
 

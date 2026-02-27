@@ -12,6 +12,7 @@ def main():
 
     try:
         # Fetch cameras
+        
         cameras = fetch_cameras()
 
         if not cameras:
