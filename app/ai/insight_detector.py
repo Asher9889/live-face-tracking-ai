@@ -13,8 +13,6 @@ class InsightFaceDetector:
         self.app = FaceAnalysis(
             name="buffalo_l",
             providers=["CUDAExecutionProvider"],
-            provider_options=[{}],
-            allowed_providers=['CUDAExecutionProvider']
         )
 
         self.app.prepare(ctx_id=0, det_size=(640, 640))
