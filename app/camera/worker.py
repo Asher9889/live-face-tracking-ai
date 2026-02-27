@@ -112,8 +112,8 @@ def _camera_loop(cam: CameraConfig) -> None:
             boxes, scores = person_detector.detect(frame)
 
             tracks = tracker.update(boxes, scores)
-
-            print(f"[Camera {cam.code}] 🔍 Detected {len(tracks)} tracks", tracks)
+            if cam.code == "entry_1":
+                print(f"[Camera {cam.code}] 🔍 Detected {len(tracks)} tracks", tracks)
 
             # detections = person_detector.detect(frame)
             # if detections is None:
