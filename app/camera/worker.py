@@ -9,16 +9,17 @@ from app.config import FRAME_RATE
 
 from ultralytics import YOLO
 
-from app.ai.insight_detector import InsightFaceDetector
+from app.ai.insight_detector import InsightFaceEngine
 from app.ai.person_detector import PersonDetector
 from app.ai.tracker_service import ByteTrackerService
 from app.camera import CameraConfig, FrameMessage
+from app.camera.extract_person_roi import extract_person_roi
 from app.camera.frame_queue import frame_queue
 from app.camera.helper import motion_score, is_blurry
 
 
 model = YOLO("yolov8n.pt")
-# detector = InsightFaceDetector()
+insight_engine = InsightFaceEngine()
 class CameraState(str, Enum):
     CONNECTING = "CONNECTING"
     CONNECTED = "CONNECTED"
@@ -107,26 +108,34 @@ def _camera_loop(cam: CameraConfig) -> None:
                 last_log = now
 
 
-            # =========================
-            # DETECTION STAGE
-            # =========================
+            # DETECTION & Tracking
 
             results = model.track(
                 frame, 
                 persist=True, 
-                tracker="botsort.yaml", # Switch to botsort for stability
+                tracker="botsort.yaml", 
                 classes=[0],            # Only track 'person' (COCO class 0)
                 verbose=False,
                 conf=0.25               # Adjust based on your environment
             )
-
+ 
             # Get results
-            if results[0].boxes.id is not None:
+            if results[0].boxes.id is not None: # gives all bbox and ids
                 boxes = results[0].boxes.xyxy.cpu().numpy()
                 ids = results[0].boxes.id.int().cpu().numpy()
                 
                 for person_id, bbox in zip(ids, boxes):
                     print(f"Track ID: {person_id} at {bbox}")
+                    roi_data = extract_person_roi(frame, person_id, bbox)
+
+                    if roi_data is None:
+                        continue
+                    
+                    person_id, roi, offset = roi_data
+
+                    faces = insight_engine.detect_and_recognize(roi, offset)
+                    print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
+                    # x1, y1, x2, y2 = map(int, bbox)
                     # Now you can pass this bbox to SCRFD for face verification
 
             # boxes, scores = person_detector.detect(frame)

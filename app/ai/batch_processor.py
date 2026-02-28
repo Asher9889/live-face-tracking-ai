@@ -8,13 +8,13 @@ from app.ai.tracker_service import ByteTrackerService
 from app.camera.frame_queue import frame_queue
 from typing import List
 from app.camera import FrameMessage
-from app.ai.insight_detector import InsightFaceDetector
+from app.ai.insight_detector import InsightFaceEngine
 from app.camera.types import Detection
 
 BATCH_SIZE = 8
 BATCH_TIMEOUT = 0.02  # 20ms
 
-face_detector = InsightFaceDetector()
+face_detector = InsightFaceEngine()
 tracker_service = ByteTrackerService()
 
 def start_batch_processor() -> None:
@@ -95,26 +95,26 @@ def _process_batch(batch: List[FrameMessage]) -> None:
 
 
 def _run_detection(frames, camera_codes, timestamps):
-    detections = []
+    # detections = []
 
-    for frame, cam_code, ts in zip(frames, camera_codes, timestamps):
-        faces = face_detector.detect(frame) or []
+    # for frame, cam_code, ts in zip(frames, camera_codes, timestamps):
+    #     faces = face_detector.detect(frame) or []
 
-        # print(f"[AI] Detected {cam_code} {len(faces)} faces")
-        for face in faces:
-            detections.append(
-                Detection(
-                    camera_code=cam_code,
-                    timestamp=ts,
-                    frame=frame,
-                    bbox=face["bbox"],
-                    landmarks=face["landmarks"],
-                    score=face["score"],
-                    pose=face["pose"],
-                    age=face["age"],
-                    gender=face["gender"]
-                )
-            )
+    #     # print(f"[AI] Detected {cam_code} {len(faces)} faces")
+    #     for face in faces:
+    #         detections.append(
+    #             Detection(
+    #                 camera_code=cam_code,
+    #                 timestamp=ts,
+    #                 frame=frame,
+    #                 bbox=face["bbox"],
+    #                 landmarks=face["landmarks"],
+    #                 score=face["score"],
+    #                 pose=face["pose"],
+    #                 age=face["age"],
+    #                 gender=face["gender"]
+    #             )
+    #         )
     return detections
 
 
