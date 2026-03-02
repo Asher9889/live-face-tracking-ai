@@ -2,7 +2,7 @@ import time
 import threading
 from app.api.run_server import start_api
 from app.camera import fetch_cameras, start_camera_threads
-from app.database.redis_client import RedisManager
+from app.recognition import embedding_store
 # from app.camera.worker import start_camera_threads
 # from app.ai.batch_processor import start_batch_processor
 # from app.recognition.engine import start_recognition_engine
@@ -12,6 +12,10 @@ def main():
     print("\n🚀 Starting Live Face Tracking System\n")
 
     try:
+
+        # Loading all embeddings first
+       
+        embedding_store.load_embeddings()
 
 
         # Starting HTTP API server
