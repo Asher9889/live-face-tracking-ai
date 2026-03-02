@@ -1,3 +1,3 @@
-from .config import FRAME_RATE
+from .config import FRAME_RATE, envConfig
 
-__all__ = ["FRAME_RATE"]
+__all__ = ["FRAME_RATE", "envConfig"]

@@ -1,7 +1,7 @@
 import time
 
 from app.camera import fetch_cameras, start_camera_threads
-from app.ai import start_batch_processor
+from app.database.redis_client import RedisManager
 # from app.camera.worker import start_camera_threads
 # from app.ai.batch_processor import start_batch_processor
 # from app.recognition.engine import start_recognition_engine
