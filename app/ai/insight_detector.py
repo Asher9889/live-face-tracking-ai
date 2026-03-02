@@ -70,6 +70,33 @@ class InsightFaceEngine:
             })
 
         return results
+    
+    def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+        """
+        Compute cosine similarity between two embeddings.
+        """
+
+        return float(np.dot(a, b))
+
+    def is_good_face(face):
+
+        score = face["score"]
+        yaw, pitch, roll = face["pose"]
+
+        if score < 0.35:
+            return False
+
+        if abs(yaw) > 35:
+            return False
+
+        if abs(pitch) > 25: 
+            return False
+
+        if abs(roll) > 20:
+            return False
+
+        return True    
+
 
 
 

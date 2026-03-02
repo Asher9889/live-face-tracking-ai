@@ -159,10 +159,16 @@ def _camera_loop(cam: CameraConfig) -> None:
                     good_faces = []
 
                     for f in faces:
-                        if is_good_face(f):
+                        if insight_engine.is_good_face(f):
                             good_faces.append(f)
 
                     print("good_faces are", len(good_faces))
+
+                    if len(good_faces) == 0:
+                        continue
+                    
+                    
+
 
                     # x1, y1, x2, y2 = map(int, bbox)
                     # Now you can pass this bbox to SCRFD for face verification

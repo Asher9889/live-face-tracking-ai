@@ -1,5 +1,6 @@
 import time
-
+import threading
+from app.api.run_server import start_api
 from app.camera import fetch_cameras, start_camera_threads
 from app.database.redis_client import RedisManager
 # from app.camera.worker import start_camera_threads
@@ -11,7 +12,21 @@ def main():
     print("\n🚀 Starting Live Face Tracking System\n")
 
     try:
-        # Fetch cameras
+
+
+        # Starting HTTP API server
+        api_thread = threading.Thread(
+            target=start_api,
+            daemon=True
+        )
+
+        api_thread.start()
+
+        print("🌐 FastAPI server started")
+
+
+
+        # Starting camera workers
         
         cameras = fetch_cameras()
 
@@ -25,9 +40,6 @@ def main():
         print("\n📷 Starting camera workers...")
         start_camera_threads(cameras)
 
-        """
-        It will process frames in batches 
-        """
         # print("🧠 Starting AI batch processor...")
         # threading.Thread(
         #     target=start_batch_processor,
