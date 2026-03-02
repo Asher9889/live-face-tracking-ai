@@ -14,6 +14,7 @@ from ultralytics import YOLO
 from app.ai.insight_detector import InsightFaceEngine
 from app.camera.extract_person_roi import extract_person_roi
 from app.events.publisher import EventPublisher
+from app.recognition import embedding_store
 from app.tracking.track_manager import TrackManager
 from app.database import redis_client
 
@@ -147,27 +148,43 @@ def _camera_loop(cam: CameraConfig) -> None:
                     
                     print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
 
-                    if len(faces) > 0: 
-                        track_manager.face_detected(
-                            cam.code,
-                            person_id,
-                        ) 
+                    if len(faces) == 0:
+                        continue
 
+                    # FACE QUALITY FILTER
 
-                    track_manager.recognition_pending(cam.code, person_id)
-                    
                     good_faces = []
 
                     for f in faces:
                         if insight_engine.is_good_face(f):
                             good_faces.append(f)
 
-                    print("good_faces are", len(good_faces))
 
                     if len(good_faces) == 0:
                         continue
+                    print("good_faces are", len(good_faces))
+
+                    track_manager.face_detected(cam.code, person_id) 
+
+                    # CHOOSE BEST FACE
+                    """
+                    handling a scenario where yolo gives multiple faces for a single person
+                    """
+                    best_face = max(good_faces, key=lambda f: f["score"])
+
+                    embedding = best_face["embedding"]
+
+                    track_manager.recognition_pending(cam.code, person_id)
+
+                    # RECOGNITION
+
+                    match = embedding_store.find_match(embedding)
                     
-                    
+                    if match:
+                        track_manager.recognition_confirmed(cam.code, person_id, match["employee_id"])
+                    else:
+                        track_manager.recognition_pending(cam.code, person_id) 
+
 
 
                     # x1, y1, x2, y2 = map(int, bbox)

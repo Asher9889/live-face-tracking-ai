@@ -43,7 +43,7 @@ class EmbeddingStore:
 
         print(f"[AI] Loaded {len(self.employee_ids)} employee embeddings")
 
-    def find_match(self, embedding, threshold=0.45):
+    def find_match(self, embedding, threshold=0.35):
         """
         Returns best matching employee
         """
