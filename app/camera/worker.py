@@ -181,10 +181,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                     match = embedding_store.find_match(embedding)
                     
                     if match:
+                        print("Match found is:", match)
                         track_manager.recognition_confirmed(cam.code, person_id, match["employee_id"])
                     else:
+                        print("No match found")
                         track_manager.recognition_pending(cam.code, person_id) 
-
 
 
                     # x1, y1, x2, y2 = map(int, bbox)
