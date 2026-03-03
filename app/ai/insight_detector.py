@@ -78,6 +78,7 @@ class InsightFaceEngine:
 
         return float(np.dot(a, b))
 
+    @staticmethod
     def is_good_face(face):
 
         score = face["score"]
