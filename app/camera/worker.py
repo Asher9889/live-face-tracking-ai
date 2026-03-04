@@ -58,8 +58,8 @@ def _camera_loop(cam: CameraConfig) -> None:
 
     track_manager = TrackManager(publisher=publisher)
     
-    track_state = {}
-    track_identity = {}
+    track_state = {} # stored on-going recorgnised track
+    track_identity = {} # store recorgnised track
 
     backoff = 1.0
     max_backoff = 30.0
@@ -177,18 +177,42 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_manager.recognition_pending(cam.code, person_id)
 
                     # RECOGNITION
-
+                    if person_id in track_identity:
+                        continue
                     match = embedding_store.find_match(embedding)
-                    
-                    if match:
-                        print("Match found is:", match)
-                        track_manager.recognition_confirmed(cam.code, person_id, match["employee_id"])
-                    else:
-                        print("No match found")
-                        track_manager.recognition_pending(cam.code, person_id) 
+                    if not match:
+                        track_manager.recognition_pending(cam.code, person_id)
+                        continue
+
+                    candidate = match["employee_id"]
+
+                    state = track_state.get(person_id)
+
+                    if state is None:
+                        track_state[person_id] = {
+                            "candidate": candidate,
+                            "count": 1
+                        } 
+                    else :
+                        if state["candidate"] == candidate:
+                            state["count"] += 1
+                        else:
+                            # reset if identity changes
+                            state["candidate"] = candidate
+                            state["count"] = 1
+                        
+                        # confirm after 3 matches
+                        if state["count"] >= 3:
+                            track_identity[person_id] = candidate
+                            track_manager.recognition_confirmed(cam.code, person_id, candidate)
+                            print("Identity locked:", candidate)
+                    # if match:
+                    #     print("Match found is:", match)
+                    #     track_manager.recognition_confirmed(cam.code, person_id, match["employee_id"])
+                    # else:
+                    #     print("No match found")
+                    #     track_manager.recognition_pending(cam.code, person_id) 
 
 
-                    # x1, y1, x2, y2 = map(int, bbox)
-                    # Now you can pass this bbox to SCRFD for face verification
 
            
