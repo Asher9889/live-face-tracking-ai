@@ -5,7 +5,6 @@ from typing import List
 import random
 from enum import Enum
 import numpy as np
-from app.ai.face_quality_filter import is_good_face
 from app.camera.types import CameraConfig
 from app.config import FRAME_RATE
 
@@ -135,14 +134,16 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     print(f"Track ID: {person_id} at {bbox}")
 
+                    # Skip if already identified
+                    if person_id in track_identity:
+                        continue
+
                     roi_data = extract_person_roi(frame, person_id, bbox)
 
                     if roi_data is None:
                         continue
                     
                     person_id, roi, offset = roi_data
-
-
 
                     faces = insight_engine.detect_and_generate_embedding(roi, offset)
                     
@@ -168,17 +169,13 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # CHOOSE BEST FACE
                     """
-                    handling a scenario where yolo gives multiple faces for a single person
+                    handling a scenario where yolo gives multiple faces for a single tracked person
                     """
                     best_face = max(good_faces, key=lambda f: f["score"])
 
                     embedding = best_face["embedding"]
 
-                    track_manager.recognition_pending(cam.code, person_id)
-
                     # RECOGNITION
-                    if person_id in track_identity:
-                        continue
                     match = embedding_store.find_match(embedding)
                     if not match:
                         track_manager.recognition_pending(cam.code, person_id)
@@ -192,26 +189,21 @@ def _camera_loop(cam: CameraConfig) -> None:
                         track_state[person_id] = {
                             "candidate": candidate,
                             "count": 1
-                        } 
-                    else :
+                        }
+                    else:
                         if state["candidate"] == candidate:
                             state["count"] += 1
                         else:
-                            # reset if identity changes
                             state["candidate"] = candidate
                             state["count"] = 1
-                        
-                        # confirm after 3 matches
-                        if state["count"] >= 3:
-                            track_identity[person_id] = candidate
-                            track_manager.recognition_confirmed(cam.code, person_id, candidate)
-                            print("Identity locked:", candidate)
-                    # if match:
-                    #     print("Match found is:", match)
-                    #     track_manager.recognition_confirmed(cam.code, person_id, match["employee_id"])
-                    # else:
-                    #     print("No match found")
-                    #     track_manager.recognition_pending(cam.code, person_id) 
+                    if track_state[person_id]["count"] >= 3:
+                        track_identity[person_id] = candidate
+                        track_manager.recognition_confirmed(
+                            cam.code,
+                            person_id,
+                            candidate
+                        )
+                        print("Identity locked:", candidate)
 
 
 

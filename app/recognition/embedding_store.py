@@ -52,12 +52,12 @@ class EmbeddingStore:
             return None
 
         # ensure normalized
-        embedding = embedding / np.linalg.norm(embedding)
+        # embedding = embedding / np.linalg.norm(embedding) # no need to normalize already getting normalized values
 
         # cosine similarity
         scores = np.dot(self.embeddings, embedding)
 
-        best_idx = np.argmax(scores)
+        best_idx = np.argmax(scores) # returns index of the largest value of similaity score
         best_score = scores[best_idx]
 
         if best_score < threshold:

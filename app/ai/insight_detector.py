@@ -46,7 +46,11 @@ class InsightFaceEngine:
             width = bbox[2] - bbox[0]
             height = bbox[3] - bbox[1]
 
-            if min(width, height) < self.MIN_FACE_SIZE:
+            embedding = face.embedding.astype(np.float32)
+            # normalize once
+            embedding /= np.linalg.norm(embedding)
+
+            if min(width, height) < self.MIN_FACE_SIZE: # skip very small faces
                 continue
 
             # Convert to global coordinates (important if ROI used)
@@ -63,7 +67,7 @@ class InsightFaceEngine:
                 "bbox": global_bbox,
                 "score": score,
                 "landmarks": face.kps.astype(np.int32),
-                "embedding": face.embedding,   # 512-d vector
+                "embedding": embedding,   # 512-d vector
                 "pose": (yaw, pitch, roll),
                 "age": int(face.age) if hasattr(face, "age") else None,
                 "gender": int(face.gender) if hasattr(face, "gender") else None
