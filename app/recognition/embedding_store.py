@@ -60,9 +60,11 @@ class EmbeddingStore:
         best_idx = np.argmax(scores) # returns index of the largest value of similaity score
         best_score = scores[best_idx]
 
-        if best_score < threshold:
-            return None
 
+        if best_score < threshold:
+            print(f"[AI] Threshold not met: {best_score} < {threshold}")
+            return None
+        print(f"[AI] Best match score above threshold: {best_score}")
         return {
             "employee_id": self.employee_ids[best_idx],
             "name": self.employee_names[best_idx],

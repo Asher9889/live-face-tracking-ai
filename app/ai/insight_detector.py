@@ -1,6 +1,6 @@
 from insightface.app import FaceAnalysis
 import numpy as np
-
+import cv2
 class InsightFaceEngine:
 
     MIN_FACE_SIZE = 30
@@ -100,4 +100,40 @@ class InsightFaceEngine:
         if abs(roll) > 20:
             return False
 
-        return True    
+        return True
+        
+    @staticmethod
+    def is_good_face_for_unknown(face, face_img):
+        
+        score = face["score"]
+        yaw, pitch, roll = face["pose"]
+
+        if score < 0.45:
+            return False
+
+        if abs(yaw) > 35:
+            return False
+
+        if abs(pitch) > 25: 
+            return False
+
+        if abs(roll) > 20:
+            return False
+
+        h, w = face_img.shape[:2]    
+        if h < 80 or w < 80:
+            return False
+        
+        gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+
+        # blur detection
+        blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
+        if blur_score < 100:
+            return False
+
+        # brightness
+        brightness = np.mean(gray)
+        if brightness < 40:
+            return False
+
+        return True

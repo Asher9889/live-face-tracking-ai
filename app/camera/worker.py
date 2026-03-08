@@ -60,6 +60,9 @@ def _camera_loop(cam: CameraConfig) -> None:
     track_state = {} # stored on-going recorgnised track
     track_identity = {} # store recorgnised track
 
+    track_unknown_state = {}
+    track_unknown_identity = {}
+
     backoff = 1.0
     max_backoff = 30.0
 
@@ -135,7 +138,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     print(f"Track ID: {person_id} at {bbox}")
 
                     # Skip if already identified
-                    if person_id in track_identity:
+                    if person_id in track_identity or person_id in track_unknown_identity: 
                         continue
 
                     roi_data = extract_person_roi(frame, person_id, bbox)
@@ -177,33 +180,40 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # RECOGNITION
                     match = embedding_store.find_match(embedding)
-                    if not match:
-                        track_manager.recognition_pending(cam.code, person_id)
+
+                    # --------------------------------------------------
+                    # CASE 1: Known person matched
+                    # --------------------------------------------------
+                    if match:
+                        # track_manager.recognition_pending(cam.code, person_id)
+                        # continue
+
+                        candidate = match["employee_id"]
+
+                        state = track_state.get(person_id)
+
+                        if state is None:
+                            track_state[person_id] = {"candidate": candidate, "count": 1}
+                        else:
+                            if state["candidate"] == candidate:
+                                state["count"] += 1
+                            else:
+                                state["candidate"] = candidate
+                                state["count"] = 1
+                        if track_state[person_id]["count"] >= 3:
+                            track_identity[person_id] = candidate
+                            track_manager.recognition_confirmed(
+                                cam.code,
+                                person_id,
+                                candidate
+                            )
+                            print("Identity locked:", candidate)
+
                         continue
 
-                    candidate = match["employee_id"]
-
-                    state = track_state.get(person_id)
-
-                    if state is None:
-                        track_state[person_id] = {
-                            "candidate": candidate,
-                            "count": 1
-                        }
-                    else:
-                        if state["candidate"] == candidate:
-                            state["count"] += 1
-                        else:
-                            state["candidate"] = candidate
-                            state["count"] = 1
-                    if track_state[person_id]["count"] >= 3:
-                        track_identity[person_id] = candidate
-                        track_manager.recognition_confirmed(
-                            cam.code,
-                            person_id,
-                            candidate
-                        )
-                        print("Identity locked:", candidate)
+                    # --------------------------------------------------
+                    # CASE 2: Unknown candidate
+                    # --------------------------------------------------
 
 
 
