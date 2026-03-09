@@ -12,5 +12,9 @@ class EnvConfig:
     REDIS_DB = int(os.getenv("REDIS_DB"))
     NODE_LOAD_EMBEDDINGS_URL = os.getenv("NODE_LOAD_EMBEDDINGS_URL")
     TOKEN_TO_ACCESS_NODE_API = os.getenv("TOKEN_TO_ACCESS_NODE_API")
+    NODE_LOAD_UNKNOWN_EMBEDDINGS_URL = os.getenv("NODE_LOAD_UNKNOWN_EMBEDDINGS_URL")
+    NODE_CREATE_UNKNOWN_URL = os.getenv("NODE_CREATE_UNKNOWN_URL")
+    MIN_UNKNOWN_FRAMES = 3
+    MAX_UNKNOWN_FRAMES = 5
 
-envConfig = EnvConfig()
+envConfig = EnvConfig()  

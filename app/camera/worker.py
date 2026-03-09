@@ -12,8 +12,9 @@ from ultralytics import YOLO
 
 from app.ai.insight_detector import InsightFaceEngine
 from app.camera.extract_person_roi import extract_person_roi
+from app.config.config import envConfig
 from app.events.publisher import EventPublisher
-from app.recognition import embedding_store
+from app.recognition import embedding_store, unknown_embedding_store
 from app.tracking.track_manager import TrackManager
 from app.database import redis_client
 
@@ -62,6 +63,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
     track_unknown_state = {}
     track_unknown_identity = {}
+    track_unknown_buffer = {}
 
     backoff = 1.0
     max_backoff = 30.0
@@ -215,6 +217,91 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # CASE 2: Unknown candidate
                     # --------------------------------------------------
 
+                    buffer = track_unknown_buffer.get(person_id)
+                    if buffer is None:
+                        track_unknown_buffer[person_id] = {
+                            "embeddings": [embedding],
+                            "faces": [best_face]
+                        }
+                    else:
+                        buffer["embeddings"].append(embedding)
+                        buffer["faces"].append(best_face)
+                    
+                    buffer = track_unknown_buffer[person_id]
+
+                    # Stop collecting after MAX_UNKNOWN_FRAMES
+                    if len(buffer["embeddings"]) > envConfig.MAX_UNKNOWN_FRAMES:
+                        buffer["embeddings"] = buffer["embeddings"][:envConfig.MAX_UNKNOWN_FRAMES]
+                        buffer["faces"] = buffer["faces"][:envConfig.MAX_UNKNOWN_FRAMES]
+
+                    # If not enough frames yet → keep collecting
+                    if len(buffer["embeddings"]) < envConfig.MIN_UNKNOWN_FRAMES:
+                        continue
+
+                    # Compute Track Centroid
+
+                    embeddings = np.stack(buffer["embeddings"])
+
+                    centroid = np.median(embeddings, axis=0)
+                    centroid = centroid / np.linalg.norm(centroid)
+
+                    # Search in Unknown Store
+
+                    unknown_match = unknown_embedding_store.find_match(centroid)
+                    timestamp = int(time.time() * 1000)
+
+                    # CASE A: Existing unknown found
+                    if unknown_match:
+                        unknown_id = unknown_match["unknown_id"]
+
+                        unknown_embedding_store.update_unknown(
+                            unknown_id,
+                            centroid,
+                            timestamp
+                        )
+
+                        track_unknown_identity[person_id] = unknown_id
+
+                        track_manager.unknown_confirmed(
+                            cam.code,
+                            person_id,
+                            unknown_id
+                        )
+
+                        print("Updated unknown:", unknown_id)
+
+                        continue
+
+                    # CASE B: New unknown identity
+
+                    best_face = max(buffer["faces"], key=lambda f: f["score"])
+
+                    bbox = best_face["bbox"]
+                    x1, y1, x2, y2 = map(int, bbox)
+
+                    h, w = frame.shape[:2]
+
+                    x1 = max(0, x1)
+                    y1 = max(0, y1)
+                    x2 = min(w, x2)
+                    y2 = min(h, y2)
+
+                    face_img = frame[y1:y2, x1:x2]
+
+                    # resize for storage
+                    face_img = cv2.resize(face_img, (224, 224))
+
+                    # encode jpeg
+                    _, buffer_img = cv2.imencode(".jpg", face_img)
+                    image_bytes = buffer_img.tobytes()
+
+                    unknown_id = unknown_embedding_store.add_unknown(centroid, image_bytes, timestamp)
+
+                    track_unknown_identity[person_id] = unknown_id
+
+                    track_manager.unknown_confirmed(cam.code, person_id, unknown_id)
+
+                    print("Created new unknown:", unknown_id)
 
 
            

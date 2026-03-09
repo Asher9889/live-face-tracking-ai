@@ -104,6 +104,25 @@ class TrackManager:
             }
         )
 
+    def unknown_confirmed(self, cam_code, person_id, unknown_id):
+
+        track = self.tracks.get(person_id)
+
+        if track["recognized"]:
+            return
+
+        if track:
+            track["recognized"] = True
+
+        self.publisher.publish(
+            "unknown_confirmed",
+            {
+                "camera": cam_code,
+                "track_id": int(person_id),
+                "unknown_id": unknown_id
+            }
+        )
+
     def cleanup_lost_tracks(self, cam_code, active_ids):
 
         lost = []
