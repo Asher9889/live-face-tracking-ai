@@ -79,7 +79,7 @@ class UnknownEmbeddingStore:
     # ---------------------------------------------------
     # Create new unknown identity
     # ---------------------------------------------------
-    def add_unknown(self, centroid_embedding, image_bytes, timestamp):
+    def add_unknown(self, centroid_embedding, image_bytes, timestamp, camera_code):
 
         centroid_embedding = centroid_embedding / np.linalg.norm(centroid_embedding)
 
@@ -90,7 +90,8 @@ class UnknownEmbeddingStore:
         data = {
             "representativeEmbedding": centroid_embedding.tolist(),
             "firstSeen": timestamp,
-            "lastSeen": timestamp
+            "lastSeen": timestamp,
+            "cameraCode": camera_code
         }
 
         response = requests.post(

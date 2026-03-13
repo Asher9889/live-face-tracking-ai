@@ -295,7 +295,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     _, buffer_img = cv2.imencode(".jpg", face_img)
                     image_bytes = buffer_img.tobytes()
 
-                    unknown_id = unknown_embedding_store.add_unknown(centroid, image_bytes, timestamp)
+                    unknown_id = unknown_embedding_store.add_unknown(centroid, image_bytes, timestamp, cam.code)
 
                     track_unknown_identity[person_id] = unknown_id
 

@@ -1,12 +1,14 @@
 import requests
 from typing import List
 from urllib.parse import quote, urlsplit
+
+from app.config.config import envConfig
 from .types import CameraConfig
 
 # from config import CAMERA_API_URL
 
 
-CAMERA_API_URL = "https://live-face-tracker.mssplonline.in/api/v1/cameras"
+CAMERA_API_URL = envConfig.CAMERA_API_URL
 
 def normalize_rtsp(rtsp_url: str, username: str, password: str) -> str:
     """
