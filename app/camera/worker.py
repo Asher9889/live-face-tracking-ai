@@ -1,3 +1,376 @@
+# import threading
+# import time
+# import cv2
+# from typing import List
+# import random
+# from enum import Enum
+# import numpy as np
+
+# from ultralytics import YOLO
+
+# from app.camera.types import CameraConfig
+# from app.camera.extract_person_roi import extract_person_roi
+# from app.config import FRAME_RATE
+# from app.config.config import envConfig
+
+# from app.ai.insight_detector import InsightFaceEngine
+# from app.events.publisher import EventPublisher
+# from app.recognition import embedding_store, unknown_embedding_store
+# from app.tracking.track_manager import TrackManager
+# from app.database import redis_client
+
+
+# # ------------------------------------------------------
+# # GLOBAL INITIALIZATION
+# # ------------------------------------------------------
+
+# model = YOLO("yolov8n.pt")
+# insight_engine = InsightFaceEngine()
+# publisher = EventPublisher(redis_client)
+
+
+# class CameraState(str, Enum):
+#     CONNECTING = "CONNECTING"
+#     CONNECTED = "CONNECTED"
+#     RECONNECTING = "RECONNECTING"
+#     DOWN = "DOWN"
+
+
+# # ------------------------------------------------------
+# # CAMERA UTIL
+# # ------------------------------------------------------
+
+# def _open_capture(rtsp_url: str):
+#     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+#     print("Camera FPS:", rtsp_url, cap.get(cv2.CAP_PROP_FPS))
+#     return cap
+
+
+# # ------------------------------------------------------
+# # THREAD SPAWNER
+# # ------------------------------------------------------
+
+# def start_camera_threads(cameras: List[CameraConfig]) -> None:
+
+#     print(f"[Camera] Starting {len(cameras)} camera threads...")
+
+#     for cam in cameras:
+#         thread = threading.Thread(
+#             target=_camera_loop,
+#             args=(cam,),
+#             daemon=True
+#         )
+#         thread.start()
+
+#         print(f"[Camera] Thread started → {cam.code}")
+
+
+# # ------------------------------------------------------
+# # CAMERA WORKER
+# # ------------------------------------------------------
+
+# def _camera_loop(cam: CameraConfig):
+
+#     print(f"[Camera] Worker started → {cam.code}")
+
+#     target_fps = int(FRAME_RATE)
+#     interval = 1.0 / target_fps
+
+#     track_manager = TrackManager(publisher=publisher)
+
+#     track_state = {}
+#     track_identity = {}
+
+#     track_unknown_identity = {}
+#     track_unknown_buffer = {}
+
+#     backoff = 1.0
+#     max_backoff = 30.0
+
+#     while True:
+
+#         print(f"[Camera] 🔌 Connecting → {cam.code}")
+
+#         cap = _open_capture(cam.rtsp_url)
+
+#         if not cap.isOpened():
+
+#             print(f"[Camera] ❌ Connect failed → {cam.code}")
+
+#             sleep_time = min(backoff + random.uniform(0, 1), max_backoff)
+#             print(f"[Camera] ⏳ Retry in {sleep_time:.1f}s")
+
+#             time.sleep(sleep_time)
+
+#             backoff = min(backoff * 2, max_backoff)
+#             continue
+
+#         print(f"[Camera] ✅ Connected → {cam.code}")
+
+#         backoff = 1.0
+#         last_processed = 0.0
+
+#         while True:
+
+#             grabbed = cap.grab()
+
+#             if not grabbed:
+#                 print(f"[Camera] ⚠️ Stream lost → {cam.code}")
+#                 cap.release()
+#                 break
+
+#             now = time.time()
+
+#             if now - last_processed < interval:
+#                 continue
+
+#             ret, frame = cap.retrieve()
+
+#             if not ret or frame is None:
+#                 continue
+
+#             last_processed = now
+
+#             # --------------------------------------------------
+#             # PERSON DETECTION + TRACKING
+#             # --------------------------------------------------
+
+#             results = model.track(
+#                 frame,
+#                 persist=True,
+#                 tracker="botsort.yaml",
+#                 classes=[0],
+#                 verbose=False,
+#                 conf=0.25
+#             )
+
+#             if results[0].boxes.id is None:
+#                 continue
+
+#             boxes = results[0].boxes.xyxy.cpu().numpy()
+#             ids = results[0].boxes.id.int().cpu().numpy()
+
+#             for person_id, bbox in zip(ids, boxes):
+
+#                 person_id = int(person_id)
+
+#                 track_manager.update_track(cam.code, person_id, bbox)
+
+#                 if person_id in track_identity or person_id in track_unknown_identity:
+#                     continue
+
+#                 roi_data = extract_person_roi(frame, person_id, bbox)
+
+#                 if roi_data is None:
+#                     continue
+
+#                 person_id, roi, offset = roi_data
+
+#                 # --------------------------------------------------
+#                 # FACE DETECTION
+#                 # --------------------------------------------------
+
+#                 faces = insight_engine.detect_and_generate_embedding(roi, offset)
+#                 print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
+
+#                 if not faces:
+#                     continue
+
+#                 # --------------------------------------------------
+#                 # FILTER GOOD FACES
+#                 # --------------------------------------------------
+
+#                 good_faces = [f for f in faces if insight_engine.is_good_face(f)]
+
+#                 if not good_faces:
+#                     continue
+
+#                 track_manager.face_detected(cam.code, person_id)
+
+#                 # --------------------------------------------------
+#                 # SELECT BEST FACE IN THIS FRAME (QUALITY BASED)
+#                 # --------------------------------------------------
+
+#                 face_candidates = []
+
+#                 for f in good_faces:
+
+#                     x1, y1, x2, y2 = map(int, f["bbox"])
+
+#                     x1 = max(0, x1)
+#                     y1 = max(0, y1)
+#                     x2 = min(frame.shape[1], x2)
+#                     y2 = min(frame.shape[0], y2)
+
+#                     face_img = frame[y1:y2, x1:x2]
+
+#                     if face_img.size == 0:
+#                         continue
+
+#                     quality = insight_engine.compute_face_quality(f, face_img)
+
+#                     face_candidates.append((f, face_img, quality))
+
+#                 if not face_candidates:
+#                     continue
+
+#                 best_face, face_img, quality = max(face_candidates, key=lambda x: x[2])
+
+#                 embedding = best_face["embedding"]
+
+#                 # --------------------------------------------------
+#                 # KNOWN PERSON MATCH
+#                 # --------------------------------------------------
+
+#                 match = embedding_store.find_match(embedding)
+
+#                 if match:
+
+#                     candidate = match["employee_id"]
+
+#                     state = track_state.get(person_id)
+
+#                     if state is None:
+#                         track_state[person_id] = {"candidate": candidate, "count": 1}
+
+#                     else:
+
+#                         if state["candidate"] == candidate:
+#                             state["count"] += 1
+#                         else:
+#                             state["candidate"] = candidate
+#                             state["count"] = 1
+
+#                     if track_state[person_id]["count"] >= 3:
+
+#                         track_identity[person_id] = candidate
+
+#                         track_manager.recognition_confirmed(
+#                             cam.code,
+#                             person_id,
+#                             candidate
+#                         )
+
+#                         print("Identity locked:", candidate)
+
+#                     continue
+
+#                 # --------------------------------------------------
+#                 # UNKNOWN BUFFERING
+#                 # --------------------------------------------------
+
+#                 buffer = track_unknown_buffer.get(person_id)
+
+#                 if buffer is None:
+
+#                     track_unknown_buffer[person_id] = {
+#                         "embeddings": [embedding],
+#                         "faces": [{
+#                             "face": best_face,
+#                             "img": face_img,
+#                             "quality": quality
+#                         }]
+#                     }
+
+#                 else:
+
+#                     buffer["embeddings"].append(embedding)
+
+#                     buffer["faces"].append({
+#                         "face": best_face,
+#                         "img": face_img,
+#                         "quality": quality
+#                     })
+
+#                 buffer = track_unknown_buffer[person_id]
+
+#                 # trim buffer
+
+#                 if len(buffer["embeddings"]) > envConfig.MAX_UNKNOWN_FRAMES:
+
+#                     buffer["embeddings"] = buffer["embeddings"][-envConfig.MAX_UNKNOWN_FRAMES:]
+#                     buffer["faces"] = buffer["faces"][-envConfig.MAX_UNKNOWN_FRAMES:]
+
+#                 if len(buffer["embeddings"]) < envConfig.MIN_UNKNOWN_FRAMES:
+#                     continue
+
+#                 # --------------------------------------------------
+#                 # COMPUTE TRACK EMBEDDING CENTROID
+#                 # --------------------------------------------------
+
+#                 embeddings = np.stack(buffer["embeddings"])
+
+#                 centroid = np.median(embeddings, axis=0)
+#                 centroid /= np.linalg.norm(centroid)
+
+#                 timestamp = int(time.time() * 1000)
+
+#                 # --------------------------------------------------
+#                 # UNKNOWN SEARCH
+#                 # --------------------------------------------------
+
+#                 unknown_match = unknown_embedding_store.find_match(centroid)
+
+#                 if unknown_match:
+
+#                     unknown_id = unknown_match["unknown_id"]
+
+#                     unknown_embedding_store.update_unknown(
+#                         unknown_id,
+#                         centroid,
+#                         timestamp
+#                     )
+
+#                     track_unknown_identity[person_id] = unknown_id
+
+#                     track_manager.unknown_confirmed(
+#                         cam.code,
+#                         person_id,
+#                         unknown_id
+#                     )
+
+#                     print("Updated unknown:", unknown_id)
+
+#                     continue
+
+#                 # --------------------------------------------------
+#                 # CREATE NEW UNKNOWN
+#                 # --------------------------------------------------
+
+#                 best = max(buffer["faces"], key=lambda f: f["quality"])
+
+#                 face_img = best["img"]
+
+#                 face_img = cv2.resize(face_img, (224, 224))
+
+#                 _, buffer_img = cv2.imencode(".jpg", face_img)
+
+#                 image_bytes = buffer_img.tobytes()
+
+#                 unknown_id = unknown_embedding_store.add_unknown(
+#                     centroid,
+#                     image_bytes,
+#                     timestamp,
+#                     cam.code
+#                 )
+
+#                 track_unknown_identity[person_id] = unknown_id
+
+#                 track_manager.unknown_confirmed(
+#                     cam.code,
+#                     person_id,
+#                     unknown_id
+#                 )
+
+#                 print("Created new unknown:", unknown_id)
+
+
+
+
+
+
+
+
 import threading
 import time
 import cv2

@@ -137,3 +137,29 @@ class InsightFaceEngine:
             return False
 
         return True
+    
+    @staticmethod
+    def compute_face_quality(face, face_img):
+
+        score = face["score"]
+        yaw, pitch, roll = face["pose"]
+
+        gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+
+        blur = cv2.Laplacian(gray, cv2.CV_64F).var()
+        brightness = np.mean(gray)
+
+        h, w = face_img.shape[:2]
+        size = min(h, w)
+
+        pose_penalty = abs(yaw) + abs(pitch) + abs(roll)
+
+        quality = (
+            score * 2
+            + blur * 0.01
+            + brightness * 0.02
+            + size * 0.05
+            - pose_penalty * 0.05
+        )
+
+        return quality

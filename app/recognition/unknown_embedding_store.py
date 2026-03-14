@@ -84,13 +84,12 @@ class UnknownEmbeddingStore:
         centroid_embedding = centroid_embedding / np.linalg.norm(centroid_embedding)
 
         files = {
-            "image": ("face.jpg", image_bytes, "image/jpeg")
+            "face": ("face.jpg", image_bytes, "image/jpeg")
         }
 
         data = {
             "representativeEmbedding": centroid_embedding.tolist(),
-            "firstSeen": timestamp,
-            "lastSeen": timestamp,
+            "timestamp": timestamp,
             "cameraCode": camera_code
         }
 
