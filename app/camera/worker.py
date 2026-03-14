@@ -551,6 +551,24 @@ def _camera_loop(cam: CameraConfig) -> None:
                     """
                     best_face = max(good_faces, key=lambda f: f["score"])
 
+                    # crop face image
+                    bbox = best_face["bbox"]
+                    x1, y1, x2, y2 = map(int, bbox)
+
+                    h, w = frame.shape[:2]
+                    x1 = max(0, x1)
+                    y1 = max(0, y1)
+                    x2 = min(w, x2)
+                    y2 = min(h, y2)
+
+                    face_img = frame[y1:y2, x1:x2]
+
+                    if face_img.size == 0:
+                        continue
+
+                    # compute quality
+                    quality = insight_engine.compute_face_quality(best_face, face_img)
+
                     embedding = best_face["embedding"]
 
                     # RECOGNITION
@@ -589,23 +607,28 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # --------------------------------------------------
                     # CASE 2: Unknown candidate
                     # --------------------------------------------------
-
                     buffer = track_unknown_buffer.get(person_id)
+
+                    face_entry = {
+                        "face": best_face,
+                        "img": face_img,
+                        "quality": quality
+                    }
                     if buffer is None:
                         track_unknown_buffer[person_id] = {
                             "embeddings": [embedding],
-                            "faces": [best_face]
+                            "faces": [face_entry]
                         }
                     else:
                         buffer["embeddings"].append(embedding)
-                        buffer["faces"].append(best_face)
-                    
+                        buffer["faces"].append(face_entry)
+
                     buffer = track_unknown_buffer[person_id]
 
                     # Stop collecting after MAX_UNKNOWN_FRAMES
                     if len(buffer["embeddings"]) > envConfig.MAX_UNKNOWN_FRAMES:
-                        buffer["embeddings"] = buffer["embeddings"][:envConfig.MAX_UNKNOWN_FRAMES]
-                        buffer["faces"] = buffer["faces"][:envConfig.MAX_UNKNOWN_FRAMES]
+                        buffer["embeddings"] = buffer["embeddings"][-envConfig.MAX_UNKNOWN_FRAMES]
+                        buffer["faces"] = buffer["faces"][-envConfig.MAX_UNKNOWN_FRAMES]
 
                     # If not enough frames yet → keep collecting
                     if len(buffer["embeddings"]) < envConfig.MIN_UNKNOWN_FRAMES:
@@ -647,19 +670,11 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # CASE B: New unknown identity
 
-                    best_face = max(buffer["faces"], key=lambda f: f["score"])
+                    # CASE B: New unknown identity
 
-                    bbox = best_face["bbox"]
-                    x1, y1, x2, y2 = map(int, bbox)
+                    best = max(buffer["faces"], key=lambda f: f["quality"])
 
-                    h, w = frame.shape[:2]
-
-                    x1 = max(0, x1)
-                    y1 = max(0, y1)
-                    x2 = min(w, x2)
-                    y2 = min(h, y2)
-
-                    face_img = frame[y1:y2, x1:x2]
+                    face_img = best["img"]
 
                     # resize for storage
                     face_img = cv2.resize(face_img, (224, 224))
@@ -668,13 +683,19 @@ def _camera_loop(cam: CameraConfig) -> None:
                     _, buffer_img = cv2.imencode(".jpg", face_img)
                     image_bytes = buffer_img.tobytes()
 
-                    unknown_id = unknown_embedding_store.add_unknown(centroid, image_bytes, timestamp, cam.code)
+                    unknown_id = unknown_embedding_store.add_unknown(
+                        centroid,
+                        image_bytes,
+                        timestamp,
+                        cam.code
+                    )
 
                     track_unknown_identity[person_id] = unknown_id
 
                     track_manager.unknown_confirmed(cam.code, person_id, unknown_id)
 
                     print("Created new unknown:", unknown_id)
+
 
 
            
