@@ -1,5 +1,6 @@
 import numpy as np
 import requests
+import json
 
 from app.config.config import envConfig
 
@@ -88,8 +89,8 @@ class UnknownEmbeddingStore:
         }
 
         data = {
-            "representativeEmbedding": centroid_embedding.tolist(),
-            "timestamp": timestamp,
+            "representativeEmbedding": json.dumps(centroid_embedding.tolist()),
+            "timestamp":  str(timestamp),
             "cameraCode": camera_code
         }
 
@@ -105,7 +106,7 @@ class UnknownEmbeddingStore:
         data = response.json()
 
         if not data.get("success"):
-            raise Exception("Failed to create unknown identity")
+            raise Exception(f"Node API error during unknown creation: {data}")
 
         unknown_id = data["data"]["unknownId"]
 
