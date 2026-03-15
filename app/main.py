@@ -13,8 +13,6 @@ def main():
         # Loading all embeddings first
         embedding_store.load_embeddings()
      
-
-
         # Starting HTTP API server on a seprate thread
         api_thread = threading.Thread(
             target=start_api,
@@ -24,8 +22,6 @@ def main():
         api_thread.start()
 
         print("🌐 FastAPI server started")
-
-
 
         # Starting camera workers
         cameras = fetch_cameras()

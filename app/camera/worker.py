@@ -56,7 +56,7 @@ def _camera_loop(cam: CameraConfig) -> None:
     print(f"[Camera] Worker started → {cam.code}")
     target_fps = int(FRAME_RATE)
 
-    track_manager = TrackManager(publisher=publisher)
+    track_manager = TrackManager(publisher=publisher, gate_type=cam.gate_type)
     
     track_state = {} # stored on-going recorgnised track
     track_identity = {} # store recorgnised track

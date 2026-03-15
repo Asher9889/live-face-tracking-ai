@@ -3,8 +3,9 @@ import time
 
 class TrackManager:
 
-    def __init__(self, publisher):
+    def __init__(self, publisher, gate_type):
         self.publisher = publisher
+        self.gate_type = gate_type
         self.tracks = {}
 
     def update_track(self, cam_code, person_id, bbox):
@@ -103,6 +104,27 @@ class TrackManager:
                 "identity": identity
             }
         )
+
+        # publish entry/exit event
+        if self.gate_type == "ENTRY":
+            self.publisher.publish(
+                "person_entered",
+                {
+                    "camera": cam_code,
+                    "track_id": int(person_id),
+                    "identity": identity
+                }
+            )
+
+        elif self.gate_type == "EXIT":
+            self.publisher.publish(
+                "person_exited",
+                {
+                    "camera": cam_code,
+                    "track_id": int(person_id),
+                    "identity": identity
+                }
+            )
 
     def unknown_confirmed(self, cam_code, person_id, unknown_id):
 
