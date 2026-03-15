@@ -80,7 +80,7 @@ class UnknownEmbeddingStore:
     # ---------------------------------------------------
     # Create new unknown identity
     # ---------------------------------------------------
-    def add_unknown(self, centroid_embedding, image_bytes, timestamp, camera_code):
+    def add_unknown(self, centroid_embedding, image_bytes, timestamp, camera_code, embedding_count):
 
         centroid_embedding = centroid_embedding / np.linalg.norm(centroid_embedding)
 
@@ -91,7 +91,8 @@ class UnknownEmbeddingStore:
         data = {
             "representativeEmbedding": json.dumps(centroid_embedding.tolist()),
             "timestamp":  str(timestamp),
-            "cameraCode": camera_code
+            "cameraCode": camera_code,
+            "embeddingCount": embedding_count
         }
 
         response = requests.post(
@@ -123,30 +124,37 @@ class UnknownEmbeddingStore:
     # ---------------------------------------------------
     # Update existing unknown identity
     # ---------------------------------------------------
-    def update_unknown(self, unknown_id, new_embedding, timestamp):
+    def update_unknown(self, unknown_id, centroid, timestamp, camera_code, image_bytes):
 
-        idx = self.id_to_index[unknown_id]
+        # idx = self.id_to_index[unknown_id]
 
-        centroid = self.embeddings[idx]
-        count = self.counts[idx]
+        # centroid = self.embeddings[idx]
+        # count = self.counts[idx]
 
-        updated = (centroid * count + new_embedding) / (count + 1)
-        updated = updated / np.linalg.norm(updated)
+        # updated = (centroid * count + new_embedding) / (count + 1)
+        # updated = updated / np.linalg.norm(updated)
 
-        self.embeddings[idx] = updated
-        self.counts[idx] += 1
+        # self.embeddings[idx] = updated
+        # self.counts[idx] += 1
 
-        requests.patch(
-            f"{envConfig.NODE_UPDATE_UNKNOWN_URL}/{unknown_id}",
-            json={
-                "embedding": new_embedding.tolist(),
-                "timestamp": timestamp
+        files = {
+            "face": ("face.jpg", image_bytes, "image/jpeg")
+        }
+
+        response = requests.post(
+            envConfig.NODE_UPDATE_UNKNOWN_URL,
+            files=files,
+            data={
+                "unknown_id": unknown_id,
+                "meanEmbedding": centroid.tolist(),
+                "timestamp": timestamp,
+                "cameraCode": camera_code,
             },
             headers={
                 "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
             }
         )
 
-        return updated
+        return response
 
 unknown_embedding_store = UnknownEmbeddingStore(api_url=envConfig.NODE_LOAD_UNKNOWN_EMBEDDINGS_URL)

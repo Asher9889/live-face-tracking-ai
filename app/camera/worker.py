@@ -636,6 +636,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # Compute Track Centroid
 
+                    embedding_count = len(buffer["embeddings"])
                     embeddings = np.stack(buffer["embeddings"])
 
                     centroid = np.median(embeddings, axis=0)
@@ -649,11 +650,17 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # CASE A: Existing unknown found
                     if unknown_match:
                         unknown_id = unknown_match["unknown_id"]
-
+                        best = max(buffer["faces"], key=lambda f: f["quality"])
+                        best_img = best["img"]
+                        best_img = cv2.resize(best_img, (224, 224))
+                        _, buffer_img = cv2.imencode(".jpg", best_img)
+                        image_bytes = buffer_img.tobytes()
                         unknown_embedding_store.update_unknown(
                             unknown_id,
                             centroid,
-                            timestamp
+                            timestamp,
+                            cam.code,
+                            image_bytes
                         )
 
                         track_unknown_identity[person_id] = unknown_id
@@ -661,15 +668,12 @@ def _camera_loop(cam: CameraConfig) -> None:
                         track_manager.unknown_confirmed(
                             cam.code,
                             person_id,
-                            unknown_id
+                            unknown_id,
                         )
 
                         print("Updated unknown:", unknown_id)
 
                         continue
-
-                    # CASE B: New unknown identity
-
                     # CASE B: New unknown identity
 
                     best = max(buffer["faces"], key=lambda f: f["quality"])
@@ -687,7 +691,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                         centroid,
                         image_bytes,
                         timestamp,
-                        cam.code
+                        cam.code,
+                        embedding_count
                     )
 
                     track_unknown_identity[person_id] = unknown_id
