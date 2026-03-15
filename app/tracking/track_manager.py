@@ -125,22 +125,32 @@ class TrackManager:
 
     def cleanup_lost_tracks(self, cam_code, active_ids):
 
+        active_ids = set(active_ids)
+        now = time.time()
         lost = []
 
-        for tid in list(self.tracks.keys()):
+        for tid, track in list(self.tracks.items()):
 
-            if tid not in active_ids:
+            # update last seen if still active
+            if tid in active_ids:
+                track["last_seen"] = now
+                continue
 
-                lost.append(tid)
+            # check timeout
+            if now - track["last_seen"] < 2.0:  # 2 seconds grace period
+                continue
 
-                self.publisher.publish(
-                    "track_lost",
-                    {
-                        "camera": cam_code,
-                        "track_id": int(tid)
-                    }
-                )
+            lost.append(tid)
 
-                del self.tracks[tid]
+            self.publisher.publish(
+                "track_lost",
+                {
+                    "camera": cam_code,
+                    "track_id": int(tid)
+                }
+            )
+
+            del self.tracks[tid]
 
         return lost
+
