@@ -113,7 +113,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                 # print(f"[Camera] ❤️ Live → {cam.code}")
                 last_log = now
 
-
+            frame_ts = int(time.time() * 1000)
+            frame_h, frame_w = frame.shape[:2]
             # DETECTION & Tracking
 
             results = model.track(
@@ -144,7 +145,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     person_id = int(person_id)
                     # update lifecycle
-                    track_manager.update_track(cam.code, person_id, bbox)
+                    track_manager.update_track(cam.code, person_id, bbox, frame_ts, frame_w, frame_h)
 
                     print(f"Track ID: {person_id} at {bbox}")
 

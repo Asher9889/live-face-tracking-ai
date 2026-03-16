@@ -8,7 +8,7 @@ class TrackManager:
         self.gate_type = gate_type
         self.tracks = {}
 
-    def update_track(self, cam_code, person_id, bbox):
+    def update_track(self, cam_code, person_id, bbox, frame_ts, frame_w, frame_h):
 
         now = time.time()
 
@@ -19,7 +19,11 @@ class TrackManager:
                 "last_seen": now,
                 "face_seen": False,
                 "recognition_started": False,
-                "recognized": False
+                "recognized": False,
+                "bbox": bbox.tolist(),
+                "frameTs": frame_ts,
+                "frame_width": frame_w,
+                "frame_height": frame_h
             }
 
             self.publisher.publish(
@@ -27,7 +31,11 @@ class TrackManager:
                 {
                     "camera": cam_code,
                     "track_id": int(person_id),
-                    "bbox": bbox.tolist()
+                    "bbox": bbox.tolist(),
+                    "frameTs": frame_ts,
+                    "frame_width": frame_w,
+                    "frame_height": frame_h,
+                    "eventTs": int(time.time() * 1000)
                 }
             )
 
@@ -40,7 +48,12 @@ class TrackManager:
                 {
                     "camera": cam_code,
                     "track_id": int(person_id),
-                    "bbox": bbox.tolist()
+                    "bbox": bbox.tolist(),
+                    "frameTs": frame_ts,
+                    "frame_width": frame_w,
+                    "frame_height": frame_h,
+                    "eventTs": int(time.time() * 1000)
+                    
                 }
             )
 
@@ -86,7 +99,7 @@ class TrackManager:
             }
         )
 
-    def recognition_confirmed(self, cam_code, person_id, identity):
+    def recognition_confirmed(self, cam_code, person_id, identityId):
 
         track = self.tracks.get(person_id)
 
@@ -96,35 +109,26 @@ class TrackManager:
         if track:
             track["recognized"] = True
 
+        payload = {
+            "person_id": identityId,
+            "camera_code": cam_code,
+            "track_id": int(person_id),
+            "bbox": track["bbox"],
+            "frameTs": track["frameTs"],
+            "eventTs": int(time.time() * 1000),
+            "frame_width": track["frame_width"],
+            "frame_height": track["frame_height"]
+        }
+
         self.publisher.publish(
-            "recognition_confirmed",
-            {
-                "camera": cam_code,
-                "track_id": int(person_id),
-                "identity": identity
-            }
-        )
+            "recognition_confirmed", payload)
 
         # publish entry/exit event
         if self.gate_type == "ENTRY":
-            self.publisher.publish(
-                "person_entered",
-                {
-                    "camera": cam_code,
-                    "track_id": int(person_id),
-                    "identity": identity
-                }
-            )
+            self.publisher.publish("person_entered", payload)
 
         elif self.gate_type == "EXIT":
-            self.publisher.publish(
-                "person_exited",
-                {
-                    "camera": cam_code,
-                    "track_id": int(person_id),
-                    "identity": identity
-                }
-            )
+            self.publisher.publish("person_exited", payload)
 
     def unknown_confirmed(self, cam_code, person_id, unknown_id):
 
