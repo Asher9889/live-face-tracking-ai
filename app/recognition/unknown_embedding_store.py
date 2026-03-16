@@ -81,45 +81,54 @@ class UnknownEmbeddingStore:
     # Create new unknown identity
     # ---------------------------------------------------
     def add_unknown(self, centroid_embedding, image_bytes, timestamp, camera_code, embedding_count):
+        try:
+            centroid_embedding = centroid_embedding / np.linalg.norm(centroid_embedding)
 
-        centroid_embedding = centroid_embedding / np.linalg.norm(centroid_embedding)
-
-        files = {
-            "face": ("face.jpg", image_bytes, "image/jpeg")
-        }
-
-        data = {
-            "representativeEmbedding": json.dumps(centroid_embedding.tolist()),
-            "timestamp":  str(timestamp),
-            "cameraCode": camera_code,
-            "embeddingCount": embedding_count
-        }
-
-        response = requests.post(
-            envConfig.NODE_CREATE_UNKNOWN_URL,
-            files=files,
-            data=data,
-            headers={
-                "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
+            files = {
+                "face": ("face.jpg", image_bytes, "image/jpeg")
             }
-        )
 
-        data = response.json()
+            data = {
+                "representativeEmbedding": json.dumps(centroid_embedding.tolist()),
+                "timestamp":  str(timestamp),
+                "cameraCode": camera_code,
+                "embeddingCount": embedding_count
+            }
 
-        if not data.get("success"):
-            raise Exception(f"Node API error during unknown creation: {data}")
+            response = requests.post(
+                envConfig.NODE_CREATE_UNKNOWN_URL,
+                files=files,
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
+                }
+            )
 
-        unknown_id = data["data"]["unknownId"]
+            data = response.json()
 
-        idx = len(self.unknown_ids)
+            if not data.get("success"):
+                print("[AI] Node API returned error:", data)
+                return None
 
-        self.unknown_ids.append(unknown_id)
-        self.id_to_index[unknown_id] = idx
+            unknown_id = data["data"]["unknownId"]
 
-        self.embeddings = np.vstack([self.embeddings, centroid_embedding])
-        self.counts.append(1)
+            idx = len(self.unknown_ids)
 
-        return unknown_id
+            self.unknown_ids.append(unknown_id)
+            self.id_to_index[unknown_id] = idx
+
+            self.embeddings = np.vstack([self.embeddings, centroid_embedding])
+            self.counts.append(1)
+
+            return unknown_id
+
+        except requests.exceptions.RequestException as e:
+            print("[AI] Node API request failed:", e)
+
+        except Exception as e:
+            print("[AI] Unknown creation error:", e)
+
+        return None
 
     # ---------------------------------------------------
     # Update existing unknown identity
