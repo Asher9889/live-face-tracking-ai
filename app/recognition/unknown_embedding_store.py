@@ -45,8 +45,8 @@ class UnknownEmbeddingStore:
 
             idx = len(self.unknown_ids)
 
-            self.unknown_ids.append(u["_id"])
-            self.id_to_index[u["_id"]] = idx
+            self.unknown_ids.append(u["id"])
+            self.id_to_index[u["id"]] = idx
             self.counts.append(u["embeddingCount"])
 
             vectors.append(emb)

@@ -2,7 +2,7 @@ import time
 import threading
 from app.api.run_server import start_api
 from app.camera import fetch_cameras, start_camera_threads
-from app.recognition import embedding_store
+from app.recognition import embedding_store, unknown_embedding_store
 
 
 def main():
@@ -12,6 +12,7 @@ def main():
 
         # Loading all embeddings first
         embedding_store.load_embeddings()
+        unknown_embedding_store.load_unknown_embeddings()
      
         # Starting HTTP API server on a seprate thread
         api_thread = threading.Thread(
