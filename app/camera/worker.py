@@ -289,6 +289,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # Search in Unknown Store
 
                     unknown_match = unknown_embedding_store.find_match(centroid)
+                    print("unknown_match", unknown_match)
                     timestamp = int(time.time() * 1000)
 
                     # CASE A: Existing unknown found

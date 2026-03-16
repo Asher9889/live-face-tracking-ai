@@ -154,7 +154,7 @@ class UnknownEmbeddingStore:
             envConfig.NODE_UPDATE_UNKNOWN_URL,
             files=files,
             data={
-                "unknown_id": unknown_id,
+                "unknownId": unknown_id,
                 "meanEmbedding":  json.dumps(centroid.tolist()),
                 "timestamp": str(timestamp),
                 "cameraCode": camera_code,
