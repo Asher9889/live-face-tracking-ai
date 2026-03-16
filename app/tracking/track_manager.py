@@ -29,7 +29,7 @@ class TrackManager:
             self.publisher.publish(
                 "track_created",
                 {
-                    "camera": cam_code,
+                    "camera_code": cam_code,
                     "track_id": int(person_id),
                     "bbox": bbox.tolist(),
                     "frameTs": frame_ts,
@@ -46,7 +46,7 @@ class TrackManager:
             self.publisher.publish(
                 "track_updated",
                 {
-                    "camera": cam_code,
+                    "camera_code": cam_code,
                     "track_id": int(person_id),
                     "bbox": bbox.tolist(),
                     "frameTs": frame_ts,
@@ -74,7 +74,7 @@ class TrackManager:
             self.publisher.publish(
                 "face_detected",
                 {
-                    "camera": cam_code,
+                    "camera_code": cam_code,
                     "track_id": int(person_id)
                 }
             )
@@ -94,7 +94,7 @@ class TrackManager:
         self.publisher.publish(
             "recognition_pending",
             {
-                "camera": cam_code,
+                "camera_code": cam_code,
                 "track_id": int(person_id)
             }
         )
@@ -142,7 +142,7 @@ class TrackManager:
         self.publisher.publish(
             "unknown_confirmed",
             {
-                "camera": cam_code,
+                "camera_code": cam_code,
                 "track_id": int(person_id),
                 "unknown_id": unknown_id
             }
@@ -170,7 +170,7 @@ class TrackManager:
             self.publisher.publish(
                 "track_lost",
                 {
-                    "camera": cam_code,
+                    "camera_code": cam_code,
                     "track_id": int(tid)
                 }
             )
