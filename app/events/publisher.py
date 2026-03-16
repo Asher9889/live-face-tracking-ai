@@ -15,7 +15,7 @@ class EventPublisher:
         message = {
             "event": event_type,
             "timestamp": time.time(),
-            "data": payload
+            **payload
         }
 
         self.redis.publish(channel, json.dumps(message))
