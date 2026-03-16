@@ -99,7 +99,7 @@ class TrackManager:
             }
         )
 
-    def recognition_confirmed(self, cam_code, person_id, identityId):
+    def recognition_confirmed(self, cam_code, person_id, identityId, avg_similarity):
 
         track = self.tracks.get(person_id)
 
@@ -109,6 +109,7 @@ class TrackManager:
         if track:
             track["recognized"] = True
 
+        confidence = self.compute_confidence(avg_similarity)
         payload = {
             "person_id": identityId,
             "camera_code": cam_code,
@@ -117,7 +118,8 @@ class TrackManager:
             "frameTs": track["frameTs"],
             "eventTs": int(time.time() * 1000),
             "frame_width": track["frame_width"],
-            "frame_height": track["frame_height"]
+            "frame_height": track["frame_height"],
+            "similarity": confidence
         }
 
         self.publisher.publish("recognition_confirmed", payload)
@@ -178,4 +180,18 @@ class TrackManager:
             del self.tracks[tid]
 
         return lost
+
+    def compute_confidence(self, best_similarity, threshold=0.40, frames=3):
+        margin = best_similarity - threshold
+
+        if margin <= 0:
+            return 0
+
+        temporal_bonus = min(frames / 3, 1.0) * 2
+
+        confidence = threshold + margin * (1 + temporal_bonus)
+
+        confidence = min(confidence, 1.0)
+
+        return round(confidence * 100, 2)
 

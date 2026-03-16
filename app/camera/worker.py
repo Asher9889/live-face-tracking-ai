@@ -219,23 +219,28 @@ def _camera_loop(cam: CameraConfig) -> None:
                         # continue
 
                         candidate = match["employee_id"]
+                        score = match["similarity"]
 
                         state = track_state.get(person_id)
 
                         if state is None:
-                            track_state[person_id] = {"candidate": candidate, "count": 1}
+                            track_state[person_id] = {"candidate": candidate, "count": 1, "score_sum": score}
                         else:
                             if state["candidate"] == candidate:
                                 state["count"] += 1
+                                state["score_sum"] += score
                             else:
                                 state["candidate"] = candidate
                                 state["count"] = 1
+                                state["score_sum"] = score
                         if track_state[person_id]["count"] >= 3:
+                            avg_similarity = state["score_sum"] / state["count"]
                             track_identity[person_id] = candidate
                             track_manager.recognition_confirmed(
                                 cam.code,
                                 person_id,
-                                candidate
+                                candidate,
+                                avg_similarity
                             )
                             print("Identity locked:", candidate)
 
