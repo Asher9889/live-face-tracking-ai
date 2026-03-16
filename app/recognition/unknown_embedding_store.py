@@ -155,8 +155,8 @@ class UnknownEmbeddingStore:
             files=files,
             data={
                 "unknown_id": unknown_id,
-                "meanEmbedding": centroid.tolist(),
-                "timestamp": timestamp,
+                "meanEmbedding":  json.dumps(centroid.tolist()),
+                "timestamp": str(timestamp),
                 "cameraCode": camera_code,
             },
             headers={
