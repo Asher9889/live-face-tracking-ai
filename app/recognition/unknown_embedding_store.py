@@ -59,7 +59,7 @@ class UnknownEmbeddingStore:
     # ---------------------------------------------------
     # Search unknown identities
     # ---------------------------------------------------
-    def find_match(self, embedding, threshold=0.6):
+    def find_match(self, embedding, threshold=0.40):
 
         if self.embeddings.shape[0] == 0:
             return None
