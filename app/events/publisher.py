@@ -6,7 +6,7 @@ class EventPublisher:
         self.redis = redis_client
 
     def publish(self, event_type, payload):
-        camera_code = payload["camera"]
+        camera_code = payload["camera_code"]
         channel = f"live-face-tracker:camera-events:{camera_code}"
         message = {
             "event": event_type,

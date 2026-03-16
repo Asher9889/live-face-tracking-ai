@@ -120,8 +120,7 @@ class TrackManager:
             "frame_height": track["frame_height"]
         }
 
-        self.publisher.publish(
-            "recognition_confirmed", payload)
+        self.publisher.publish("recognition_confirmed", payload)
 
         # publish entry/exit event
         if self.gate_type == "ENTRY":
