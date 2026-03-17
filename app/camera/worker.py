@@ -278,8 +278,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     # QUALITY GATE: Wait for a high-quality face
-                    best_buffered_face = max(buffer["faces"], key=lambda f: f["quality"])
-                    min_req_quality = getattr(envConfig, "MIN_FACE_QUALITY", 0.6)
+                    best_buffered_face = max(buffer["faces"], key=lambda f: f["quality"]) # mostly getting higher than 0.5
+                    min_req_quality = getattr(envConfig, "MIN_FACE_QUALITY", 0.45)
 
                     # If the best face in our buffer is still poor, keep collecting & sliding window
                     if best_buffered_face["quality"] < min_req_quality:
