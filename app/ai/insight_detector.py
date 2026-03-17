@@ -155,12 +155,15 @@ class InsightFaceEngine:
 
         # HARD REJECTION 
         if blur < 60:
+            print("rejected frame due to low blur=======")
             return -1  # reject
 
         if size < 80:
+            print("rejected frame due to small size=======")
             return -1  # reject
 
         if brightness < 40 or brightness > 220:
+            print("rejected frame due to brightness=======")
             return -1  # reject
 
         # NORMALIZATION (important)
