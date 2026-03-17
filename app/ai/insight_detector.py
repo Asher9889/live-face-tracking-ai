@@ -158,7 +158,7 @@ class InsightFaceEngine:
             print("rejected frame due to low blur=======")
             return -1  # reject
 
-        if size < 80:
+        if size < 40:
             print("rejected frame due to small size=======")
             return -1  # reject
 

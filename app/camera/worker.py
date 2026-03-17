@@ -204,8 +204,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # compute quality or reject the face
                     quality = insight_engine.compute_face_quality(best_face, face_img)
-                    if quality < 0:   
-                        print("rejected frame due to low light=======")
+                    if quality < 0:
                         continue
 
                     embedding = best_face["embedding"]
