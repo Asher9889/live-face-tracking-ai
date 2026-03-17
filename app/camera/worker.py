@@ -162,7 +162,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     faces = insight_engine.detect_and_generate_embedding(roi, offset)
                     
-                    print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
+                    # print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
 
                     if len(faces) == 0:
                         continue
