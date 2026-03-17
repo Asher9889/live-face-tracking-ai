@@ -168,7 +168,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     # FACE QUALITY FILTER
-
                     good_faces = []
 
                     for f in faces:
@@ -203,8 +202,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                     if face_img.size == 0:
                         continue
 
-                    # compute quality
+                    # compute quality or reject the face
                     quality = insight_engine.compute_face_quality(best_face, face_img)
+                    if quality < 0:   
+                        continue
 
                     embedding = best_face["embedding"]
 

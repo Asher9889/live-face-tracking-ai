@@ -88,10 +88,11 @@ class InsightFaceEngine:
         score = face["score"]
         yaw, pitch, roll = face["pose"]
 
-        if score < 0.35:
+        # 1. Detection confidence (tighten this)
+        if score < 0.5:
             return False
 
-        if abs(yaw) > 35:
+        if abs(yaw) > 30:
             return False
 
         if abs(pitch) > 25: 
@@ -152,14 +153,29 @@ class InsightFaceEngine:
         h, w = face_img.shape[:2]
         size = min(h, w)
 
-        pose_penalty = abs(yaw) + abs(pitch) + abs(roll)
+        # HARD REJECTION 
+        if blur < 60:
+            return -1  # reject
+
+        if size < 80:
+            return -1  # reject
+
+        if brightness < 40 or brightness > 220:
+            return -1  # reject
+
+        # NORMALIZATION (important)
+        blur_norm = min(blur / 300, 1.0)
+        brightness_norm = brightness / 255
+        size_norm = min(size / 200, 1.0)
+
+        pose_penalty = (abs(yaw)/25 + abs(pitch)/20 + abs(roll)/25) / 3
 
         quality = (
-            score * 2
-            + blur * 0.01
-            + brightness * 0.02
-            + size * 0.05
-            - pose_penalty * 0.05
-        )
+            score * 0.4
+            + blur_norm * 0.2
+            + brightness_norm * 0.1
+            + size_norm * 0.2
+            - pose_penalty * 0.3
+    )
 
         return quality

@@ -149,16 +149,17 @@ class UnknownEmbeddingStore:
         files = {
             "face": ("face.jpg", image_bytes, "image/jpeg")
         }
+        data = {
+            "unknownId": unknown_id,
+            "meanEmbedding":  json.dumps(centroid.tolist()),
+            "timestamp": str(timestamp),
+            "cameraCode": camera_code,
+        }
 
         response = requests.post(
             envConfig.NODE_UPDATE_UNKNOWN_URL,
             files=files,
-            data={
-                "unknownId": unknown_id,
-                "meanEmbedding":  json.dumps(centroid.tolist()),
-                "timestamp": str(timestamp),
-                "cameraCode": camera_code,
-            },
+            data=data,
             headers={
                 "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
             }
