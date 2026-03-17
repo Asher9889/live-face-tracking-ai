@@ -283,6 +283,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # If the best face in our buffer is still poor, keep collecting & sliding window
                     if best_buffered_face["quality"] < min_req_quality:
+                        print("waiting for better quality face", best_buffered_face["quality"])
                         continue
 
                     # Compute Track Centroid
