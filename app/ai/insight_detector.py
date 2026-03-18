@@ -138,7 +138,7 @@ class InsightFaceEngine:
             return False
 
         return True
-    
+
     @staticmethod
     def compute_face_quality(face, face_img):
 
@@ -153,12 +153,19 @@ class InsightFaceEngine:
         h, w = face_img.shape[:2]
         size = min(h, w)
 
-        # HARD REJECTION 
-        if blur < 60:
+        # HARD REJECTION
+        if blur < 80:
             print("rejected frame due to low blur=======", blur)
             return -1  # reject
 
-        
+        gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+        gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+        sobel = np.mean(np.sqrt(gx**2 + gy**2))
+        if sobel < 40:
+            print("rejected frame due to low sobel score=======", sobel)
+            return -1  # reject
+
+
         # if size < 40:
         #     print("rejected frame due to small size=======", size)
         #     return -1  # reject
@@ -180,6 +187,6 @@ class InsightFaceEngine:
             + brightness_norm * 0.1
             + size_norm * 0.2
             - pose_penalty * 0.3
-    )
+        )
 
         return quality
