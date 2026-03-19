@@ -151,6 +151,7 @@ class InsightFaceEngine:
         brightness = np.mean(gray)
 
         h, w = face_img.shape[:2]
+        print("Size is w * h", w, "*", h)
         size = min(h, w)
 
         # HARD REJECTION
