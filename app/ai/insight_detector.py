@@ -154,23 +154,23 @@ class InsightFaceEngine:
         size = min(h, w)
 
         # HARD REJECTION
-        if blur < 80:
+        if blur < 100:
             print("rejected frame due to low blur=======", blur)
             return -1  # reject
 
         gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         sobel = np.mean(np.sqrt(gx**2 + gy**2))
-        if sobel < 40:
+        if sobel < 60:
             print("rejected frame due to low sobel score=======", sobel)
             return -1  # reject
 
 
-        # if size < 40:
-        #     print("rejected frame due to small size=======", size)
-        #     return -1  # reject
+        if size < 20:
+            print("rejected frame due to small size=======", size)
+            return -1  # reject
 
-        if brightness < 40 or brightness > 220:
+        if brightness < 50 or brightness > 220:
             print("rejected frame due to brightness=======", brightness)
             return -1  # reject
 
