@@ -151,27 +151,26 @@ class InsightFaceEngine:
         brightness = np.mean(gray)
 
         h, w = face_img.shape[:2]
-        print("Size is w * h", w, "*", h)
         size = min(h, w)
 
         # HARD REJECTION
-        if blur < 100:
+        if blur < 80:
             print("rejected frame due to low blur=======", blur)
             return -1  # reject
 
         gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         sobel = np.mean(np.sqrt(gx**2 + gy**2))
-        if sobel < 60:
+        if sobel < 45:
             print("rejected frame due to low sobel score=======", sobel)
             return -1  # reject
 
 
-        if size < 20:
+        if size < 30:
             print("rejected frame due to small size=======", size)
             return -1  # reject
 
-        if brightness < 50 or brightness > 220:
+        if brightness < 40 or brightness > 220:
             print("rejected frame due to brightness=======", brightness)
             return -1  # reject
 
