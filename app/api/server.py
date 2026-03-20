@@ -58,7 +58,7 @@ def wait_for_api(timeout=10):
     return False
 
 
-@app.get("/")
+@app.get("/health")
 def health():
     return {"status": "ok"}
 
