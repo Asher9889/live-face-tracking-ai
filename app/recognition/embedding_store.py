@@ -26,6 +26,11 @@ class EmbeddingStore:
 
         employees = data["data"]
 
+
+        if len(employees) < 1:
+            print("[AI] ⚠️ No employees found → running in UNKNOWN-ONLY mode")
+            return
+
         vectors = []
 
         for emp in employees:
