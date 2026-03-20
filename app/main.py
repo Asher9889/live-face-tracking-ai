@@ -17,12 +17,6 @@ def main():
         embedding_store.load_embeddings()
         unknown_embedding_store.load_unknown_embeddings()
      
-
-        ready = wait_for_api(timeout=5)
-        if not ready:
-            print("⚠️ FASTAPI not ready, running in degraded mode")
-            return
-
         # Starting camera workers
         cameras = fetch_cameras()
         if not cameras:
