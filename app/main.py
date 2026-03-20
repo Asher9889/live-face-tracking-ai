@@ -3,8 +3,7 @@ import threading
 from app.api.run_server import start_api
 from app.camera import fetch_cameras, start_camera_threads
 from app.recognition import embedding_store, unknown_embedding_store
-
-
+from app.api.server import wait_for_api
 def main():
     print("\n🚀 Starting Live Face Tracking System\n")
 
@@ -15,12 +14,12 @@ def main():
         unknown_embedding_store.load_unknown_embeddings()
      
         # Starting HTTP API server on a seprate thread
-        api_thread = threading.Thread(
-            target=start_api,
-            daemon=True
-        )
-
+        api_thread = threading.Thread(target=start_api, daemon=True)
         api_thread.start()
+
+        if not wait_for_api():
+            print("❌ FastAPI failed to start. Exiting AI engine.")
+            return
 
         print("🌐 FastAPI server started")
 

@@ -3,6 +3,8 @@ from typing import List, Optional
 import cv2
 import numpy as np
 import threading
+import time 
+import requests
 
 from app.recognition import embedding_store, unknown_embedding_store
 from app.ai.insight_detector import InsightFaceEngine
@@ -39,6 +41,21 @@ def normalize(v: np.ndarray) -> np.ndarray:
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+def wait_for_api(timeout=10):
+    start = time.time()
+
+    while time.time() - start < timeout:
+        try:
+            res = requests.get("http://localhost:4001/health")
+            if res.status_code == 200:
+                return True
+        except:
+            pass
+
+        time.sleep(0.5)
+
+    return False
 
 
 @app.get("/")
