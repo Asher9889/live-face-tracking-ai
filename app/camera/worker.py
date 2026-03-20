@@ -104,13 +104,11 @@ def _camera_loop(cam: CameraConfig) -> None:
             now = time.time()
 
             if now - last_processed < interval:
-                print(f"[Camera {cam.code}] skipping frame: rate limit (interval={interval:.3f}s)")
                 continue
 
             ret, frame = cap.retrieve()
 
             if not ret or frame is None:
-                print(f"[Camera {cam.code}] frame retrieve failed or empty frame (ret={ret})")
                 continue
 
             last_processed = now
@@ -163,7 +161,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                     roi_data = extract_person_roi(frame, person_id, bbox)
 
                     if roi_data is None:
-                        print(f"[Camera {cam.code}][Person {person_id}] skip: ROI extraction failed")
                         continue
                     
                     person_id, roi, offset = roi_data
