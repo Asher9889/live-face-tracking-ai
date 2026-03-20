@@ -104,11 +104,13 @@ def _camera_loop(cam: CameraConfig) -> None:
             now = time.time()
 
             if now - last_processed < interval:
+                print(f"[Camera {cam.code}] skipping frame: rate limit (interval={interval:.3f}s)")
                 continue
 
             ret, frame = cap.retrieve()
 
             if not ret or frame is None:
+                print(f"[Camera {cam.code}] frame retrieve failed or empty frame (ret={ret})")
                 continue
 
             last_processed = now
@@ -155,11 +157,13 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # Skip if already identified
                     if person_id in track_identity or person_id in track_unknown_identity: 
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: already identified")
                         continue
 
                     roi_data = extract_person_roi(frame, person_id, bbox)
 
                     if roi_data is None:
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: ROI extraction failed")
                         continue
                     
                     person_id, roi, offset = roi_data
@@ -169,6 +173,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
 
                     if len(faces) == 0:
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: no faces detected in ROI")
                         continue
 
                     # FACE QUALITY FILTER
@@ -180,6 +185,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
 
                     if len(good_faces) == 0:
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: no good faces after filter")
                         continue
                     print("good_faces are", len(good_faces))
 
@@ -204,16 +210,19 @@ def _camera_loop(cam: CameraConfig) -> None:
                     face_img = frame[y1:y2, x1:x2]
 
                     if face_img.size == 0:
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: cropped face image empty")
                         continue
 
                     # compute quality or reject the face
                     quality = insight_engine.compute_face_quality(best_face, face_img)
                     if quality < 0:
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: low quality (quality={quality})")
                         continue
 
                     embedding = best_face["embedding"]
 
                     if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: embedding not stable yet")
                         continue
 
                     # RECOGNITION
@@ -252,6 +261,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                             )
                             print("Identity locked:", candidate)
 
+                        print(f"[Camera {cam.code}][Person {person_id}] matched candidate={candidate} similarity={score}")
                         continue
 
                     # --------------------------------------------------
@@ -282,6 +292,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # If not enough frames yet → keep collecting
                     if len(buffer["embeddings"]) < envConfig.MIN_UNKNOWN_FRAMES:
+                        print(f"[Camera {cam.code}][Person {person_id}] collecting unknowns: have={len(buffer['embeddings'])} need={envConfig.MIN_UNKNOWN_FRAMES}")
                         continue
 
                     # QUALITY GATE: Wait for a high-quality face
