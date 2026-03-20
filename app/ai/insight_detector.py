@@ -40,6 +40,7 @@ class InsightFaceEngine:
         for face in faces:
             score = float(face.det_score)
             if score < self.MIN_SCORE:
+                print(f"Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
                 continue
 
             bbox = face.bbox.astype(np.int32)
@@ -51,6 +52,7 @@ class InsightFaceEngine:
             embedding /= np.linalg.norm(embedding)
 
             if min(width, height) < self.MIN_FACE_SIZE: # skip very small faces
+                print(f"Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
                 continue
 
             # Convert to global coordinates (important if ROI used)
@@ -61,7 +63,10 @@ class InsightFaceEngine:
                 bbox[3] + y_offset
             ])
 
-            yaw, pitch, roll = face.pose if face.pose is not None else (0, 0, 0)
+            if face.pose is None:
+                continue
+
+            yaw, pitch, roll = face.pose
 
             results.append({
                 "bbox": global_bbox,
@@ -161,7 +166,7 @@ class InsightFaceEngine:
         gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         sobel = np.mean(np.sqrt(gx**2 + gy**2))
-        if sobel < 45:
+        if sobel < 40:
             print("rejected frame due to low sobel score=======", sobel)
             return -1  # reject
 

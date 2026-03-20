@@ -5,6 +5,7 @@ from typing import List
 import random
 from enum import Enum
 import numpy as np
+from app.camera.helper import is_stable_embedding
 from app.camera.types import CameraConfig
 from app.config import FRAME_RATE
 
@@ -63,6 +64,8 @@ def _camera_loop(cam: CameraConfig) -> None:
 
     track_unknown_identity = {}
     track_unknown_buffer = {}
+
+    track_embedding_state = {}
 
     backoff = 1.0
     max_backoff = 30.0
@@ -139,6 +142,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_identity.pop(tid, None)
                     track_unknown_identity.pop(tid, None)
                     track_unknown_buffer.pop(tid, None)
+                    track_embedding_state.pop(tid, None)
 
                 
                 for person_id, bbox in zip(ids, boxes):
@@ -147,7 +151,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # update lifecycle
                     track_manager.update_track(cam.code, person_id, bbox, frame_ts, frame_w, frame_h)
 
-                    print(f"Track ID: {person_id} at {bbox}")
+                    # print(f"Track ID: {person_id} at {bbox}")
 
                     # Skip if already identified
                     if person_id in track_identity or person_id in track_unknown_identity: 
@@ -208,6 +212,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     embedding = best_face["embedding"]
+
+                    if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
+                        continue
 
                     # RECOGNITION
                     match = embedding_store.find_match(embedding)
@@ -279,7 +286,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # QUALITY GATE: Wait for a high-quality face
                     best_buffered_face = max(buffer["faces"], key=lambda f: f["quality"]) # mostly getting higher than 0.5
-                    min_req_quality = getattr(envConfig, "MIN_FACE_QUALITY", 0.45)
+                    min_req_quality = getattr(envConfig, "MIN_FACE_QUALITY", 0.5)
 
                     # If the best face in our buffer is still poor, keep collecting & sliding window
                     if best_buffered_face["quality"] < min_req_quality:
