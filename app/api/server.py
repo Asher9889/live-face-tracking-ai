@@ -47,14 +47,21 @@ def wait_for_api(timeout=10):
 
     while time.time() - start < timeout:
         try:
-            res = requests.get("http://localhost:4001/health")
+            print("Checking API...", flush=True)
+            res = requests.get("http://127.0.0.1:4001/health", timeout=1)
+
+            print("Got response:", res.status_code, flush=True)
+
             if res.status_code == 200:
+                print("API READY", flush=True)
                 return True
-        except:
-            pass
+
+        except Exception as e:
+            print("API check failed:", e, flush=True)
 
         time.sleep(0.5)
 
+    print("API WAIT TIMEOUT", flush=True)
     return False
 
 
