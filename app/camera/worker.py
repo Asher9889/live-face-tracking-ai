@@ -170,7 +170,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
 
                     if len(faces) == 0:
-                        print(f"[Camera {cam.code}][Person {person_id}] skip: no faces detected in ROI")
                         continue
 
                     # FACE QUALITY FILTER
@@ -182,7 +181,6 @@ def _camera_loop(cam: CameraConfig) -> None:
 
 
                     if len(good_faces) == 0:
-                        print(f"[Camera {cam.code}][Person {person_id}] skip: no good faces after filter")
                         continue
                     print("good_faces are", len(good_faces))
 
@@ -207,7 +205,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                     face_img = frame[y1:y2, x1:x2]
 
                     if face_img.size == 0:
-                        print(f"[Camera {cam.code}][Person {person_id}] skip: cropped face image empty")
                         continue
 
                     # compute quality or reject the face
