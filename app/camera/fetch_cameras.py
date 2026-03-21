@@ -74,6 +74,7 @@ def fetch_cameras() -> List[CameraConfig]:
             code=cam["code"],
             name=cam.get("name", ""),
             gate_type=cam.get("gateType", "UNKNOWN"),
+            camera_role=cam.get("role", "OBSERVE"),  # Default to OBSERVE if not specified
             rtsp_url=rtsp_url,
             ai_fps=cam.get("streamConfig", {}).get("aiFps", 10),
             roi=cam.get("roi", {}),

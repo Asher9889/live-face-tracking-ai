@@ -32,13 +32,15 @@ def is_stable_embedding(track_embedding_state, person_id, embedding, quality):
     sim_last = float(np.dot(embedding, last))
 
     # adaptive identity check
-    if sim_ref < (0.55 if len(state["samples"]) > 2 else 0.5):
+    if sim_ref < (0.40 if len(state["samples"]) > 2 else 0.40):
+        print(f"Rejected embedding for person {person_id} due to low similarity to reference: {sim_ref:.2f} threshold: {(0.40 if len(state['samples']) > 2 else 0.40):.2f}")
         return False
 
     # relative improvement
     quality_improved = quality > last_quality * 1.15
 
-    if sim_last < 0.7 and not quality_improved:
+    if sim_last < 0.40 and not quality_improved:
+        print(f"Rejected embedding for person {person_id} due to low similarity to last known embedding: {sim_last:.2f} threshold: 0.40 and no quality improvement: {quality_improved}")
         return False
 
     # accept

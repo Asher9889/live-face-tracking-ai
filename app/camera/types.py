@@ -9,6 +9,7 @@ class CameraConfig:
     code: str
     name: str
     gate_type: str
+    camera_role: str
     rtsp_url: str
     ai_fps: int
     roi: Dict[str, Any]

@@ -153,7 +153,7 @@ class UnknownEmbeddingStore:
             "unknownId": unknown_id,
             "meanEmbedding":  json.dumps(centroid.tolist()),
             "timestamp": str(timestamp),
-            "cameraCode": camera_code,
+            "cameraCode": str(camera_code),
         }
 
         response = requests.post(

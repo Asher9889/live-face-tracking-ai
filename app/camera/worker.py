@@ -54,7 +54,7 @@ def start_camera_threads(cameras: List[CameraConfig]) -> None:
         print(f"[Camera] Thread started → {cam.code}")
 
 def _camera_loop(cam: CameraConfig) -> None:
-    print(f"[Camera] Worker started → {cam.code}")
+    print(f"[Camera] Worker started → {cam.code} && Role: {cam.camera_role}")
     target_fps = int(FRAME_RATE)
 
     track_manager = TrackManager(publisher=publisher, gate_type=cam.gate_type)
@@ -307,7 +307,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                     centroid = centroid / np.linalg.norm(centroid)
 
                     # Search in Unknown Store
-
                     unknown_match = unknown_embedding_store.find_match(centroid)
                     print("unknown_match", unknown_match)
                     timestamp = int(time.time() * 1000)
@@ -337,10 +336,12 @@ def _camera_loop(cam: CameraConfig) -> None:
                         )
 
                         print("Updated unknown:", unknown_id)
-
                         continue
                     # CASE B: New unknown identity
 
+                    if cam.camera_role != "REGISTER":
+                        print(f"[Camera {cam.code}] skip: not allowed to create unknown")
+                        continue
                     best = max(buffer["faces"], key=lambda f: f["quality"])
 
                     face_img = best["img"]
