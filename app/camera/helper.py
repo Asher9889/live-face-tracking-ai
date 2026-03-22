@@ -164,3 +164,35 @@ def is_stable_embedding(track_embedding_state, person_id, embedding, quality):
     state["last"] = embedding
 
     return True
+ 
+def expand_bbox(bbox, frame_w, frame_h):
+    x1, y1, x2, y2 = bbox
+
+    w = x2 - x1
+    h = y2 - y1
+
+    # 🔥 asymmetric expansion
+    top_scale = 0.20   # more space for head
+    bottom_scale = 0.05
+    side_scale = 0.10
+
+    x1 = max(0, int(x1 - w * side_scale))
+    x2 = min(frame_w, int(x2 + w * side_scale))
+
+    y1 = max(0, int(y1 - h * top_scale))     # 🔥 bigger expansion on top
+    y2 = min(frame_h, int(y2 + h * bottom_scale))
+
+    return x1, y1, x2, y2
+
+def score_face(face, roi_shape):
+    h, w, _ = roi_shape
+    cx, cy = w / 2, h / 2
+
+    x1, y1, x2, y2 = face["bbox"]
+    fx = (x1 + x2) / 2
+    fy = (y1 + y2) / 2
+
+    dist = ((fx - cx)**2 + (fy - cy)**2)**0.5
+    dist_score = 1 - (dist / max(w, h))
+
+    return 0.7 * face["quality"] + 0.3 * dist_score

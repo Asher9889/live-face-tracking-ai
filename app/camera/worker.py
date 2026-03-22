@@ -5,7 +5,7 @@ from typing import List
 import random
 from enum import Enum
 import numpy as np
-from app.camera.helper import is_stable_embedding
+from app.camera.helper import is_stable_embedding, expand_bbox, score_face
 from app.camera.types import CameraConfig
 from app.config import FRAME_RATE
 
@@ -59,6 +59,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
     track_manager = TrackManager(publisher=publisher, gate_type=cam.gate_type)
     
+    track_known_buffer = {} # stoes data for one time recorgnition 
     track_state = {} # stored on-going recorgnised track
     track_identity = {} # store recorgnised track
 
@@ -148,8 +149,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                 for person_id, bbox in zip(ids, boxes):
 
                     person_id = int(person_id)
+                    x1, y1, x2, y2 = expand_bbox(bbox, frame_w, frame_h) # expending bbox by 10% default
+                    expanded_bbox = np.array([x1, y1, x2, y2])
                     # update lifecycle
-                    track_manager.update_track(cam.code, person_id, bbox, frame_ts, frame_w, frame_h)
+                    track_manager.update_track(cam.code, person_id, expanded_bbox, frame_ts, frame_w, frame_h)
 
                     # print(f"Track ID: {person_id} at {bbox}")
 
@@ -158,12 +161,18 @@ def _camera_loop(cam: CameraConfig) -> None:
                         print(f"[Camera {cam.code}][Person {person_id}] skip: already identified")
                         continue
 
-                    roi_data = extract_person_roi(frame, person_id, bbox)
+
+
+                    roi_data = extract_person_roi(frame, person_id, expanded_bbox)
 
                     if roi_data is None:
                         continue
                     
                     person_id, roi, offset = roi_data
+
+                    if roi.shape[0] < 120 or roi.shape[1] < 120:
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: small ROI size {roi.shape}, allowing only larger than 120x120")
+                        continue
 
                     faces = insight_engine.detect_and_generate_embedding(roi, offset)
                     
@@ -172,153 +181,264 @@ def _camera_loop(cam: CameraConfig) -> None:
                     if len(faces) == 0:
                         continue
 
-                    # FACE QUALITY FILTER
-                    good_faces = []
+                    # ---------------------------
+                    # FILTER FACES
+                    # ---------------------------
+                    good_faces = [f for f in faces if insight_engine.is_good_face(f)]
 
-                    for f in faces:
-                        if insight_engine.is_good_face(f):
-                            good_faces.append(f)
-
-
-                    if len(good_faces) == 0:
+                    if not good_faces:
                         continue
-                    print("good_faces are", len(good_faces))
 
-                    track_manager.face_detected(cam.code, person_id) 
+                    track_manager.face_detected(cam.code, person_id)
 
-                    # CHOOSE BEST FACE
-                    """
-                    handling a scenario where yolo gives multiple faces for a single tracked person
-                    """
-                    best_face = max(good_faces, key=lambda f: f["score"])
+                    # ---------------------------
+                    # COMPUTE QUALITY FOR ALL
+                    # ---------------------------
+                    faces_with_quality = []
 
-                    # crop face image
+                    for f in good_faces:
+                        bbox = f["bbox"]
+                        x1, y1, x2, y2 = map(int, bbox)
+
+                        h, w = frame.shape[:2]
+                        x1 = max(0, x1)
+                        y1 = max(0, y1)
+                        x2 = min(w, x2)
+                        y2 = min(h, y2)
+
+                        face_img = frame[y1:y2, x1:x2]
+
+                        if face_img.size == 0:
+                            continue
+
+                        quality = insight_engine.compute_face_quality(f, face_img)
+
+                        if quality < 0.3:   # threshold (tune later)
+                            continue
+
+                        f["quality"] = quality
+                        faces_with_quality.append(f)
+
+                    if not faces_with_quality:
+                        continue
+
+                    # ---------------------------
+                    # SELECT BEST FACE (by quality)
+                    # ---------------------------
+                    best_face = max(faces_with_quality, key=lambda f: score_face(f, roi.shape))
+                    quality = best_face["quality"]
+                    embedding = best_face["embedding"]
+
                     bbox = best_face["bbox"]
                     x1, y1, x2, y2 = map(int, bbox)
 
-                    h, w = frame.shape[:2]
                     x1 = max(0, x1)
                     y1 = max(0, y1)
-                    x2 = min(w, x2)
-                    y2 = min(h, y2)
+                    x2 = min(frame_w, x2)
+                    y2 = min(frame_h, y2)
 
                     face_img = frame[y1:y2, x1:x2]
 
                     if face_img.size == 0:
                         continue
 
-                    # compute quality or reject the face
-                    quality = insight_engine.compute_face_quality(best_face, face_img)
-                    if quality < 0:
-                        print(f"[Camera {cam.code}][Person {person_id}] skip: low quality (quality={quality})")
-                        continue
-
-                    embedding = best_face["embedding"]
-
+                    # ---------------------------
+                    # STABILITY CHECK
+                    # ---------------------------
                     if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
-                        print(f"[Camera {cam.code}][Person {person_id}] skip: embedding not stable yet")
                         continue
 
+                    # ---------------------------
+                    # BUFFER (TOP K = 3)
+                    # ---------------------------
+                    buffer = track_known_buffer.get(person_id)
+
+                    entry = {
+                        "embedding": embedding,
+                        "quality": quality
+                    }
+
+                    if buffer is None:
+                        track_known_buffer[person_id] = [entry]
+                    else:
+                        buffer.append(entry)
+
+                    buffer = track_known_buffer[person_id]
+
+                    # keep only top 3 best quality
+                    buffer = sorted(buffer, key=lambda x: x["quality"], reverse=True)[:3]
+                    track_known_buffer[person_id] = buffer
+
+                    # ---------------------------
+                    # WAIT UNTIL ENOUGH DATA
+                    # ---------------------------
+                    if len(buffer) < 3:
+                        continue
+
+                    # ---------------------------
+                    # COMBINE (WEIGHTED MEAN)
+                    # ---------------------------
+                    embeddings = np.array([x["embedding"] for x in buffer])
+                    weights = np.array([x["quality"] for x in buffer])
+
+                    if weights.sum() == 0:
+                        weights = np.ones_like(weights)
+
+                    final_embedding = np.average(embeddings, axis=0, weights=weights)
+                    final_embedding /= np.linalg.norm(final_embedding)
+
+                    # ---------------------------
                     # RECOGNITION
-                    match = embedding_store.find_match(embedding)
+                    # ---------------------------
+                    match = embedding_store.find_match(final_embedding)
 
                     # --------------------------------------------------
                     # CASE 1: Known person matched
                     # --------------------------------------------------
                     if match:
-                        # track_manager.recognition_pending(cam.code, person_id)
-                        # continue
 
                         candidate = match["employee_id"]
                         score = match["similarity"]
 
-                        state = track_state.get(person_id)
+                        track_identity[person_id] = candidate
 
-                        if state is None:
-                            track_state[person_id] = {"candidate": candidate, "count": 1, "score_sum": score}
-                        else:
-                            if state["candidate"] == candidate:
-                                state["count"] += 1
-                                state["score_sum"] += score
-                            else:
-                                state["candidate"] = candidate
-                                state["count"] = 1
-                                state["score_sum"] = score
-                        if track_state[person_id]["count"] >= 3:
-                            avg_similarity = state["score_sum"] / state["count"]
-                            track_identity[person_id] = candidate
-                            track_manager.recognition_confirmed(
-                                cam.code,
-                                person_id,
-                                candidate,
-                                avg_similarity
-                            )
-                            print("Identity locked:", candidate)
+                        track_manager.recognition_confirmed(
+                            cam.code,
+                            person_id,
+                            candidate,
+                            score
+                        )
 
-                        print(f"[Camera {cam.code}][Person {person_id}] matched candidate={candidate} similarity={score}")
+                        print("Identity locked:", candidate)
+                        track_known_buffer.pop(person_id, None)
+                        continue
+                        # track_manager.recognition_pending(cam.code, person_id)
+                        # continue
+
+                        # candidate = match["employee_id"]
+                        # score = match["similarity"]
+
+                        # state = track_state.get(person_id)
+
+                        # if state is None:
+                        #     track_state[person_id] = {"candidate": candidate, "count": 1, "score_sum": score}
+                        # else:
+                        #     if state["candidate"] == candidate:
+                        #         state["count"] += 1
+                        #         state["score_sum"] += score
+                        #     else:
+                        #         state["candidate"] = candidate
+                        #         state["count"] = 1
+                        #         state["score_sum"] = score
+                        # if track_state[person_id]["count"] >= 3:
+                        #     avg_similarity = state["score_sum"] / state["count"]
+                        #     track_identity[person_id] = candidate
+                        #     track_manager.recognition_confirmed(
+                        #         cam.code,
+                        #         person_id,
+                        #         candidate,
+                        #         avg_similarity
+                        #     )
+                        #     print("Identity locked:", candidate)
+
+                        # print(f"[Camera {cam.code}][Person {person_id}] matched candidate={candidate} similarity={score}")
+                        # continue
+
+                   # --------------------------------------------------
+                    # CASE 2: Unknown person (no match)
+                    # --------------------------------------------------
+
+                    # ---------------------------
+                    # STRICT FILTER FOR UNKNOWN
+                    # ---------------------------
+                    if not insight_engine.is_good_face_for_unknown(best_face, face_img):
+                        print(f"[Camera {cam.code}][Person {person_id}] skip unknown: strict filter failed")
                         continue
 
-                    # --------------------------------------------------
-                    # CASE 2: Unknown candidate
-                    # --------------------------------------------------
+                    # ---------------------------
+                    # INIT / UPDATE BUFFER
+                    # ---------------------------
                     buffer = track_unknown_buffer.get(person_id)
 
                     face_entry = {
                         "face": best_face,
                         "img": face_img,
-                        "quality": quality
+                        "quality": quality,
+                        "embedding": embedding
                     }
+
                     if buffer is None:
                         track_unknown_buffer[person_id] = {
-                            "embeddings": [embedding],
                             "faces": [face_entry]
                         }
                     else:
-                        buffer["embeddings"].append(embedding)
                         buffer["faces"].append(face_entry)
 
                     buffer = track_unknown_buffer[person_id]
 
-                    # Stop collecting after MAX_UNKNOWN_FRAMES (Fixed list slicing bug)
-                    if len(buffer["embeddings"]) > envConfig.MAX_UNKNOWN_FRAMES:
-                        buffer["embeddings"] = buffer["embeddings"][-envConfig.MAX_UNKNOWN_FRAMES:]
-                        buffer["faces"] = buffer["faces"][-envConfig.MAX_UNKNOWN_FRAMES:]
+                    # ---------------------------
+                    # KEEP ONLY TOP-K (QUALITY)
+                    # ---------------------------
+                    buffer["faces"] = sorted(
+                        buffer["faces"],
+                        key=lambda f: f["quality"],
+                        reverse=True
+                    )[:5]
 
-                    # If not enough frames yet → keep collecting
-                    if len(buffer["embeddings"]) < envConfig.MIN_UNKNOWN_FRAMES:
-                        print(f"[Camera {cam.code}][Person {person_id}] collecting unknowns: have={len(buffer['embeddings'])} need={envConfig.MIN_UNKNOWN_FRAMES}")
+                    # ---------------------------
+                    # FRAME COUNT GATE
+                    # ---------------------------
+                    if len(buffer["faces"]) < envConfig.MIN_UNKNOWN_FRAMES:
+                        print(f"[Camera {cam.code}][Person {person_id}] collecting unknowns: have={len(buffer['faces'])} need={envConfig.MIN_UNKNOWN_FRAMES}")
                         continue
 
-                    # QUALITY GATE: Wait for a high-quality face
-                    best_buffered_face = max(buffer["faces"], key=lambda f: f["quality"]) # mostly getting higher than 0.5
-                    min_req_quality = getattr(envConfig, "MIN_FACE_QUALITY", 0.5)
+                    # ---------------------------
+                    # QUALITY GATE
+                    # ---------------------------
+                    best_buffered_face = buffer["faces"][0]  # already sorted
+                    min_req_quality = getattr(envConfig, "MIN_FACE_QUALITY", 0.6)
 
-                    # If the best face in our buffer is still poor, keep collecting & sliding window
                     if best_buffered_face["quality"] < min_req_quality:
                         print("waiting for better quality face", best_buffered_face["quality"])
                         continue
 
-                    # Compute Track Centroid
+                    # ---------------------------
+                    # COMPUTE CENTROID (WEIGHTED)
+                    # ---------------------------
+                    faces = buffer["faces"]
 
-                    embedding_count = len(buffer["embeddings"])
-                    embeddings = np.stack(buffer["embeddings"])
+                    embeddings = np.array([f["embedding"] for f in faces])
+                    weights = np.array([f["quality"] for f in faces])
 
-                    centroid = np.median(embeddings, axis=0)
-                    centroid = centroid / np.linalg.norm(centroid)
+                    if weights.sum() == 0:
+                        weights = np.ones_like(weights)
 
-                    # Search in Unknown Store
+                    centroid = np.average(embeddings, axis=0, weights=weights)
+                    centroid /= np.linalg.norm(centroid)
+
+                    embedding_count = len(faces)
+
+                    # ---------------------------
+                    # SEARCH IN UNKNOWN STORE
+                    # ---------------------------
                     unknown_match = unknown_embedding_store.find_match(centroid)
                     print("unknown_match", unknown_match)
+
                     timestamp = int(time.time() * 1000)
 
+                    # --------------------------------------------------
                     # CASE A: Existing unknown found
+                    # --------------------------------------------------
                     if unknown_match:
                         unknown_id = unknown_match["unknown_id"]
-                        best = max(buffer["faces"], key=lambda f: f["quality"])
+
+                        best = buffer["faces"][0]  # already best
                         best_img = best["img"]
+
                         best_img = cv2.resize(best_img, (224, 224))
                         _, buffer_img = cv2.imencode(".jpg", best_img)
                         image_bytes = buffer_img.tobytes()
+
                         unknown_embedding_store.update_unknown(
                             unknown_id,
                             centroid,
@@ -336,20 +456,20 @@ def _camera_loop(cam: CameraConfig) -> None:
                         )
 
                         print("Updated unknown:", unknown_id)
+                        track_unknown_buffer.pop(person_id, None)
                         continue
-                    # CASE B: New unknown identity
 
+                    # --------------------------------------------------
+                    # CASE B: New unknown identity
+                    # --------------------------------------------------
                     if cam.camera_role != "REGISTER":
                         print(f"[Camera {cam.code}] skip: not allowed to create unknown")
                         continue
-                    best = max(buffer["faces"], key=lambda f: f["quality"])
 
+                    best = buffer["faces"][0]
                     face_img = best["img"]
 
-                    # resize for storage
                     face_img = cv2.resize(face_img, (224, 224))
-
-                    # encode jpeg
                     _, buffer_img = cv2.imencode(".jpg", face_img)
                     image_bytes = buffer_img.tobytes()
 
@@ -366,7 +486,4 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_manager.unknown_confirmed(cam.code, person_id, unknown_id)
 
                     print("Created new unknown:", unknown_id)
-
-
-
-           
+                    track_unknown_buffer.pop(person_id, None)
