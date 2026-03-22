@@ -118,7 +118,7 @@ class InsightFaceEngine:
             return False
         
 
-        if abs(yaw) < 20:
+        if abs(yaw) > 20:
             print(f"[Unknown_Filter] Rejected face due to low yaw: {yaw}, allowing only less than 20")
             return False
 
@@ -145,7 +145,7 @@ class InsightFaceEngine:
 
         # brightness
         brightness = np.mean(gray) 
-        if brightness < 40:
+        if brightness < 40 or brightness > 220:
             print(f"[Unknown_Filter] Rejected face due to brightness: {brightness}, allowing only greater than 40")
             return False
 
@@ -166,8 +166,8 @@ class InsightFaceEngine:
         size = min(h, w)
 
         # HARD REJECTION
-        # if abs(yaw) > 20:
-        #     return -1
+        if abs(yaw) > 20:
+            return -1
         
         if blur < 80:
             print("rejected frame due to low blur=======", blur)

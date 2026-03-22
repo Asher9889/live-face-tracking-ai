@@ -212,8 +212,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                             continue
 
                         quality = insight_engine.compute_face_quality(f, face_img)
+                        print(f"[Camera {cam.code}][Person {person_id}] face quality: {quality:.3f}")
 
-                        if quality < 0.3:   # threshold (tune later)
+                        if quality < 0.4: 
+                            print(f"[Camera {cam.code}][Person {person_id}] face quality below threshold: {quality:.3f}")
                             continue
 
                         f["quality"] = quality
