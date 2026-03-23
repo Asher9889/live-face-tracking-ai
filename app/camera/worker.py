@@ -174,7 +174,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         print(f"[Camera {cam.code}][Person {person_id}] skip: small ROI size {roi.shape}, allowing only larger than 120x120")
                         continue
 
-                    faces = insight_engine.detect_and_generate_embedding(roi, offset)
+                    faces = insight_engine.detect_and_generate_embedding(roi, offset, camera_code=cam.code)
                     
                     # print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
 
@@ -212,7 +212,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                             continue
 
                         quality = insight_engine.compute_face_quality(f, face_img)
-                        print(f"[Camera {cam.code}][Person {person_id}] face quality: {quality:.3f}")
 
                         if quality < 0.3: 
                             print(f"[Camera {cam.code}][Person {person_id}] face quality below threshold: {quality:.3f}")
@@ -398,10 +397,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # QUALITY GATE
                     # ---------------------------
                     best_buffered_face = buffer["faces"][0]  # already sorted
-                    min_req_quality = getattr(envConfig, "MIN_FACE_QUALITY", 0.6)
+                    min_req_quality = getattr(envConfig, "MIN_FACE_QUALITY", 0.49)
 
                     if best_buffered_face["quality"] < min_req_quality:
-                        print("waiting for better quality face", best_buffered_face["quality"])
+                        print(f"[Camera {cam.code}][Person {person_id}] waiting for better quality face: {best_buffered_face['quality']:.3f}")
                         continue
 
                     # ---------------------------

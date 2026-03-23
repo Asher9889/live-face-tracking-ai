@@ -15,7 +15,7 @@ class InsightFaceEngine:
         self.app.prepare(ctx_id=0, det_size=det_size) # ctx_id=0 means use first GPU 
         print("[AI] InsightFace Engine Ready (GPU Enabled)")
 
-    def detect_and_generate_embedding(self, frame: np.ndarray, offset=(0, 0)):
+    def detect_and_generate_embedding(self, frame: np.ndarray, offset=(0, 0), camera_code=None):
         """
         frame  : ROI or full frame
         offset : (x_offset, y_offset) if frame is cropped ROI
@@ -40,7 +40,7 @@ class InsightFaceEngine:
         for face in faces:
             score = float(face.det_score)
             if score < self.MIN_SCORE:
-                print(f"[Detect_And_Generate-Embedding]Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
+                print(f"[Detect_And_Generate-Embedding] [ Camera {camera_code}] Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
                 continue
 
             bbox = face.bbox.astype(np.int32)
