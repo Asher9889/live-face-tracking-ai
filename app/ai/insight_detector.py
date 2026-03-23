@@ -177,7 +177,7 @@ class InsightFaceEngine:
         gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         sobel = np.mean(np.sqrt(gx**2 + gy**2))
-        if sobel < 20: # last is 40 getting 19 above
+        if sobel < 40: # last is 40 getting 19 above
             print(f"[Camera {camera_code}]rejected frame due to low sobel score=======", sobel)
             return -1  # reject
 
