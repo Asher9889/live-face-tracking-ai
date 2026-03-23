@@ -4,7 +4,7 @@ import cv2
 class InsightFaceEngine:
 
     MIN_FACE_SIZE = 30
-    MIN_SCORE = 0.55
+    MIN_SCORE = 0.49
 
     def __init__(self, det_size=(640, 640)):
         self.app = FaceAnalysis(
@@ -40,7 +40,7 @@ class InsightFaceEngine:
         for face in faces:
             score = float(face.det_score)
             if score < self.MIN_SCORE:
-                print(f"Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
+                print(f"[Detect_And_Generate-Embedding]Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
                 continue
 
             bbox = face.bbox.astype(np.int32)
@@ -52,7 +52,7 @@ class InsightFaceEngine:
             embedding /= np.linalg.norm(embedding)
 
             if min(width, height) < self.MIN_FACE_SIZE: # skip very small faces
-                print(f"Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
+                print(f"[Detect_And_Generate-Embedding]Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
                 continue
 
             # Convert to global coordinates (important if ROI used)
@@ -131,8 +131,8 @@ class InsightFaceEngine:
             return False
 
         h, w = face_img.shape[:2]    
-        if h < 80 or w < 80:
-            print(f"[Unknown_Filter] Rejected face due to small size: {w}x{h}, allowing only larger than 80x80")
+        if h < 30 or w < 30:
+            print(f"[Unknown_Filter] Rejected face due to small size: {w}x{h}, allowing only larger than 30x30")
             return False
         
         gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)

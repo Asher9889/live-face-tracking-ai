@@ -170,7 +170,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     
                     person_id, roi, offset = roi_data
 
-                    if roi.shape[0] < 120 or roi.shape[1] < 120:
+                    if roi.shape[0] < 120 or roi.shape[1] < 40:
                         print(f"[Camera {cam.code}][Person {person_id}] skip: small ROI size {roi.shape}, allowing only larger than 120x120")
                         continue
 
@@ -214,7 +214,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         quality = insight_engine.compute_face_quality(f, face_img)
                         print(f"[Camera {cam.code}][Person {person_id}] face quality: {quality:.3f}")
 
-                        if quality < 0.4: 
+                        if quality < 0.3: 
                             print(f"[Camera {cam.code}][Person {person_id}] face quality below threshold: {quality:.3f}")
                             continue
 
