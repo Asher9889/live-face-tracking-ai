@@ -435,6 +435,12 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                         best = buffer["faces"][0]  # already best
                         best_img = best["img"]
+                        h, w = best_img.shape[:2]
+                        MIN_FACE_SIZE = 80   # you can tune this
+
+                        if min(h, w) < MIN_FACE_SIZE:
+                            print(f"[Camera {cam.code}][Person {person_id}] skip unknown update: face too small {w}x{h}, required at least {MIN_FACE_SIZE} width or height")
+                            continue
 
                         # best_img = cv2.resize(best_img, (224, 224))
                         _, buffer_img = cv2.imencode(".jpg", best_img)
