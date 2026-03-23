@@ -174,11 +174,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                         print(f"[Camera {cam.code}][Person {person_id}] skip: small ROI size {roi.shape}, allowing only larger than 120x120")
                         continue
 
-                    faces = insight_engine.detect_and_generate_embedding(roi, offset, camera_code=cam.code)
+                    faces = insight_engine.detect_and_generate_embedding(roi, offset, cam.code)
                     
                     # print(f"[Camera {cam.code} Person {person_id}] 🧠 InsightFace detected {len(faces)} faces")
 
-                    if len(faces) == 0:
+                    if len(faces) == 0: 
                         continue
 
                     # ---------------------------

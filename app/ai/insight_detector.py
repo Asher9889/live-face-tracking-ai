@@ -52,7 +52,7 @@ class InsightFaceEngine:
             embedding /= np.linalg.norm(embedding)
 
             if min(width, height) < self.MIN_FACE_SIZE: # skip very small faces
-                print(f"[Detect_And_Generate-Embedding]Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
+                print(f"[Detect_And_Generate-Embedding][Camera {camera_code}] Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
                 continue
 
             # Convert to global coordinates (important if ROI used)
@@ -64,6 +64,7 @@ class InsightFaceEngine:
             ])
 
             if face.pose is None:
+                print(f"[Detect_And_Generate-Embedding][Camera {camera_code}] Face pose not available.")
                 continue
 
             yaw, pitch, roll = face.pose
@@ -152,7 +153,7 @@ class InsightFaceEngine:
         return True
 
     @staticmethod
-    def compute_face_quality(face, face_img):
+    def compute_face_quality(face, face_img, camera_code=None):
 
         score = face["score"]
         yaw, pitch, roll = face["pose"]
@@ -170,23 +171,23 @@ class InsightFaceEngine:
             return -1
         
         if blur < 80:
-            print("rejected frame due to low blur=======", blur)
+            print(f"[Camera {camera_code}]rejected frame due to low blur=======", blur)
             return -1  # reject
 
         gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
         gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
         sobel = np.mean(np.sqrt(gx**2 + gy**2))
-        if sobel < 40:
-            print("rejected frame due to low sobel score=======", sobel)
+        if sobel < 20: # last is 40 getting 19 above
+            print(f"[Camera {camera_code}]rejected frame due to low sobel score=======", sobel)
             return -1  # reject
 
 
         if size < 30:
-            print("rejected frame due to small size=======", size)
+            print(f"[Camera {camera_code}]rejected frame due to small size=======", size)
             return -1  # reject
 
         if brightness < 40 or brightness > 220:
-            print("rejected frame due to brightness=======", brightness)
+            print(f"[Camera {camera_code}]rejected frame due to brightness=======", brightness)
             return -1  # reject
 
         # NORMALIZATION (important)
