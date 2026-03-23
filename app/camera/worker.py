@@ -436,7 +436,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         best = buffer["faces"][0]  # already best
                         best_img = best["img"]
 
-                        best_img = cv2.resize(best_img, (224, 224))
+                        # best_img = cv2.resize(best_img, (224, 224))
                         _, buffer_img = cv2.imencode(".jpg", best_img)
                         image_bytes = buffer_img.tobytes()
 
@@ -470,7 +470,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     best = buffer["faces"][0]
                     face_img = best["img"]
 
-                    face_img = cv2.resize(face_img, (224, 224))
+                    # face_img = cv2.resize(face_img, (224, 224))
                     _, buffer_img = cv2.imencode(".jpg", face_img)
                     image_bytes = buffer_img.tobytes()
 
