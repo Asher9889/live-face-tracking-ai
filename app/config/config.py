@@ -16,6 +16,8 @@ class EnvConfig:
     NODE_CREATE_UNKNOWN_URL = os.getenv("NODE_CREATE_UNKNOWN_URL")
     NODE_UPDATE_UNKNOWN_URL = os.getenv("NODE_UPDATE_UNKNOWN_URL")
     CAMERA_API_URL = os.getenv("CAMERA_API_URL")
+    # Global override: when true, force using local webcam instead of RTSP streams
+    USE_WEBCAM = os.getenv("USE_WEBCAM", "false").lower() in ("1", "true", "yes")
     MIN_UNKNOWN_FRAMES = 4
     MAX_UNKNOWN_FRAMES = 5
     MIN_FACE_SIZE = 60 # pixels

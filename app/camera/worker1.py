@@ -32,6 +32,12 @@ class CameraState(str, Enum):
 
 
 def _open_capture(rtsp_url: str):
+    if isinstance(rtsp_url, str) and rtsp_url.lower() == "webcam":
+        print("[Camera] Using webcam source")
+        cap = cv2.VideoCapture(0)
+        print("Camera FPS:", "webcam", cap.get(cv2.CAP_PROP_FPS))
+        return cap
+
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
     print("Camera FPS:", rtsp_url, cap.get(cv2.CAP_PROP_FPS))
     return cap

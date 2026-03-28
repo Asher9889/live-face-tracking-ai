@@ -62,13 +62,21 @@ def fetch_cameras() -> List[CameraConfig]:
             print(f"[Server] Skipping invalid camera config: {cam}")
             continue
 
-        creds = cam.get("credentials", {})
+        # If global override is set, always use local webcam
+        if getattr(envConfig, "USE_WEBCAM", False):
+            rtsp_url = "webcam"
+        else:
+            creds = cam.get("credentials", {})
 
-        rtsp_url = normalize_rtsp(
-            cam["rtspUrl"],
-            creds.get("username", ""),
-            creds.get("password", "")
-        )
+            raw_rtsp = cam.get("rtspUrl")
+            if isinstance(raw_rtsp, str) and raw_rtsp.strip().lower() == "webcam":
+                rtsp_url = "webcam"
+            else:
+                rtsp_url = normalize_rtsp(
+                    raw_rtsp,
+                    creds.get("username", ""),
+                    creds.get("password", "")
+                )
 
         config = CameraConfig(
             code=cam["code"],
