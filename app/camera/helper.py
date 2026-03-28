@@ -196,3 +196,19 @@ def score_face(face, roi_shape):
     dist_score = 1 - (dist / max(w, h))
 
     return 0.7 * face["quality"] + 0.3 * dist_score
+
+def crop_with_margin(frame, x1, y1, x2, y2, margin=0.2):
+    h, w = frame.shape[:2]
+
+    bw = x2 - x1
+    bh = y2 - y1
+
+    mx = int(bw * margin)
+    my = int(bh * margin)
+
+    nx1 = max(0, x1 - mx)
+    ny1 = max(0, y1 - my)
+    nx2 = min(w, x2 + mx)
+    ny2 = min(h, y2 + my)
+
+    return frame[ny1:ny2, nx1:nx2]

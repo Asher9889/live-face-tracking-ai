@@ -26,7 +26,7 @@ class FaceLandmarkerEngine:
         yaw_threshold: float = 20,
         pitch_threshold: float = 25,
         roll_threshold: float = 20,
-        blur_threshold: float = envConfig.BLUER_THRESHOLD,
+        blur_threshold: float = envConfig.BLUR_THRESHOLD,
         min_face_size: int = envConfig.MIN_FACE_SIZE,
     ):
         self.eye_blink_threshold = eye_blink_threshold

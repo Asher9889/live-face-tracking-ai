@@ -1,6 +1,6 @@
 import numpy as np
 
-def crop_face(frame, bbox, pad_ratio=0.25):
+def crop_face(frame, bbox, pad_ratio=0.50):
     h, w = frame.shape[:2]
 
     x1, y1, x2, y2 = bbox.astype(int)

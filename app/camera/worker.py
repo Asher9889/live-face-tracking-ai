@@ -5,7 +5,7 @@ from typing import List
 import random
 from enum import Enum
 import numpy as np
-from app.camera.helper import is_stable_embedding, expand_bbox, score_face
+from app.camera.helper import is_stable_embedding, expand_bbox, score_face, crop_with_margin
 from app.camera.types import CameraConfig
 from app.config import FRAME_RATE
 
@@ -354,37 +354,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                         print("Identity locked:", candidate)
                         track_known_buffer.pop(person_id, None)
                         continue
-                        # track_manager.recognition_pending(cam.code, person_id)
-                        # continue
-
-                        # candidate = match["employee_id"]
-                        # score = match["similarity"]
-
-                        # state = track_state.get(person_id)
-
-                        # if state is None:
-                        #     track_state[person_id] = {"candidate": candidate, "count": 1, "score_sum": score}
-                        # else:
-                        #     if state["candidate"] == candidate:
-                        #         state["count"] += 1
-                        #         state["score_sum"] += score
-                        #     else:
-                        #         state["candidate"] = candidate
-                        #         state["count"] = 1
-                        #         state["score_sum"] = score
-                        # if track_state[person_id]["count"] >= 3:
-                        #     avg_similarity = state["score_sum"] / state["count"]
-                        #     track_identity[person_id] = candidate
-                        #     track_manager.recognition_confirmed(
-                        #         cam.code,
-                        #         person_id,
-                        #         candidate,
-                        #         avg_similarity
-                        #     )
-                        #     print("Identity locked:", candidate)
-
-                        # print(f"[Camera {cam.code}][Person {person_id}] matched candidate={candidate} similarity={score}")
-                        # continue
 
                     # --------------------------------------------------
                     # CASE 2: Unknown person (no match)
@@ -404,6 +373,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     face_entry = {
                         "face": best_face,
+                        "bbox": best_face["bbox"],  # add this
                         "img": face_img,
                         "quality": quality,
                         "embedding": embedding
@@ -531,7 +501,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     best = buffer["faces"][0]
-                    face_img = best["img"]
+                    # face_img = best["img"]
+                    bbox = best["bbox"]
+                    x1, y1, x2, y2 = map(int, bbox)
+
+                    face_img = crop_with_margin(frame, x1, y1, x2, y2, margin=0.25)
 
                     # Log widths and heights of all images used to compute centroid
                     try:

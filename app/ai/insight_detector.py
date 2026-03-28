@@ -152,8 +152,8 @@ class InsightFaceEngine:
 
         # blur detection
         blur_score = cv2.Laplacian(gray, cv2.CV_64F).var()
-        if blur_score < 80:
-            print(f"[Unknown_Filter] Rejected face due to blur: {blur_score}, allowing only greater than 80")
+        if blur_score < envConfig.BLUR_THRESHOLD:
+            print(f"[Unknown_Filter] Rejected face due to blur: {blur_score}, allowing only greater than {envConfig.BLUR_THRESHOLD}")
             return False
 
         # brightness
@@ -183,7 +183,7 @@ class InsightFaceEngine:
         if abs(yaw) > 20:
             return -1
         
-        if blur < envConfig.BLUER_THRESHOLD:
+        if blur < envConfig.BLUR_THRESHOLD:
             print(f"[Camera {camera_code}]rejected frame due to low blur=======", blur)
             return -1  # reject
 
