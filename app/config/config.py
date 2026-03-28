@@ -18,5 +18,7 @@ class EnvConfig:
     CAMERA_API_URL = os.getenv("CAMERA_API_URL")
     MIN_UNKNOWN_FRAMES = 4
     MAX_UNKNOWN_FRAMES = 5
+    MIN_FACE_SIZE = 60 # pixels
+    BLUER_THRESHOLD = 50
 
 envConfig = EnvConfig()  

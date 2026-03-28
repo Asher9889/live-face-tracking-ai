@@ -12,7 +12,6 @@ from app.config import FRAME_RATE
 from ultralytics import YOLO
 
 from app.ai.insight_detector import InsightFaceEngine
-from app.ai.face_mesh_engine import FaceLandmarkerEngine
 from app.camera.extract_person_roi import extract_person_roi
 from app.config.config import envConfig
 from app.events.publisher import EventPublisher
@@ -20,17 +19,10 @@ from app.recognition import embedding_store, unknown_embedding_store
 from app.tracking.track_manager import TrackManager
 from app.database import redis_client
 
-import os
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-path = os.path.join(BASE_DIR,"../../models/facemesh/face_landmarker.task")
-path = os.path.abspath(path)
 
 model = YOLO("yolov8n.pt")
 insight_engine = InsightFaceEngine()
 publisher = EventPublisher(redis_client)
-face_landmarker_engine = FaceLandmarkerEngine(model_path=path) 
 
 class CameraState(str, Enum):
     CONNECTING = "CONNECTING"
@@ -178,9 +170,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                     
                     person_id, roi, offset = roi_data
 
-                    # if roi.shape[0] < 120 or roi.shape[1] < 40:
-                    #     print(f"[Camera {cam.code}][Person {person_id}] skip: small ROI size {roi.shape}, allowing only larger than 120x120")
-                    #     continue
+                    if roi.shape[0] < 120 or roi.shape[1] < 40:
+                        print(f"[Camera {cam.code}][Person {person_id}] skip: small ROI size {roi.shape}, allowing only larger than 120x120")
+                        continue
 
                     faces = insight_engine.detect_and_generate_embedding(roi, offset, cam.code)
                     
@@ -192,34 +184,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # ---------------------------
                     # FILTER FACES
                     # ---------------------------
-                    # good_faces = [f for f in faces if insight_engine.is_good_face(f)]
-                    good_faces = []
-
-                    for f in faces:
-                        bbox = f["bbox"]
-                        x1, y1, x2, y2 = map(int, bbox)
-
-                        x1 = max(0, x1)
-                        y1 = max(0, y1)
-                        x2 = min(frame_w, x2)
-                        y2 = min(frame_h, y2)
-
-                        face_img = frame[y1:y2, x1:x2]
-
-                        if face_img.size == 0:
-                            continue
-
-                        # 🔥 NEW: Landmarker Analysis
-                        analysis = face_landmarker_engine.analyze(face_img)
-
-                        if not face_landmarker_engine.is_valid_face(analysis):
-                            continue
-
-                        # (optional: keep your old filter as fallback)
-                        # if not insight_engine.is_good_face(f):
-                        #     continue
-                        print(f"[Camera {cam.code}][Person {person_id}] face passed landmarker quality gate")
-                        good_faces.append(f)
+                    good_faces = [f for f in faces if insight_engine.is_good_face(f)]
 
                     if not good_faces:
                         continue
@@ -445,7 +410,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # Filter out small faces (discard if min(width,height) < 100)
                     try:
-                        MIN_FACE_SIZE = 60
+                        MIN_FACE_SIZE = 100
                         filtered_faces = []
                         for f in faces:
                             img = f.get("img")

@@ -1,10 +1,16 @@
 from insightface.app import FaceAnalysis
 import numpy as np
 import cv2
+from datetime import datetime
+
+from app.config.config import envConfig
+
+now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
 class InsightFaceEngine:
 
-    MIN_FACE_SIZE = 30
-    MIN_SCORE = 0.49
+    MIN_FACE_SIZE = envConfig.MIN_FACE_SIZE
+    MIN_SCORE = 0.55
 
     def __init__(self, det_size=(640, 640)):
         self.app = FaceAnalysis(
@@ -40,7 +46,7 @@ class InsightFaceEngine:
         for face in faces:
             score = float(face.det_score)
             if score < self.MIN_SCORE:
-                print(f"[Detect_And_Generate-Embedding] [ Camera {camera_code}] Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
+                # print(f"[{now}][Detect_And_Generate-Embedding] [ Camera {camera_code}] Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
                 continue
 
             bbox = face.bbox.astype(np.int32)
@@ -51,8 +57,11 @@ class InsightFaceEngine:
             # normalize once
             embedding /= np.linalg.norm(embedding)
 
+            # print(f"[{now}][Detect_Face_Size][Camera {camera_code}] Face size: {width}x{height}, score: {score:.2f}, pose: {face.pose}, gender:{face.gender}")
+            # continue 
+
             if min(width, height) < self.MIN_FACE_SIZE: # skip very small faces
-                print(f"[Detect_And_Generate-Embedding][Camera {camera_code}] Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
+                # print(f"[Detect_And_Generate-Embedding][Camera {camera_code}] Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
                 continue
 
             # Convert to global coordinates (important if ROI used)
@@ -68,6 +77,8 @@ class InsightFaceEngine:
                 continue
 
             yaw, pitch, roll = face.pose
+            
+            print(f"[{now}][Detect_And_Generate-Embedding][Camera {camera_code}] Detected face with score: {score:.2f}, size: {width}x{height}, pose: (yaw={yaw:.1f}, pitch={pitch:.1f}, roll={roll:.1f}), gender: {face.gender}")
 
             results.append({
                 "bbox": global_bbox,
@@ -136,6 +147,7 @@ class InsightFaceEngine:
             print(f"[Unknown_Filter] Rejected face due to small size: {w}x{h}, allowing only larger than 30x30")
             return False
         
+
         gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
 
         # blur detection
@@ -150,6 +162,7 @@ class InsightFaceEngine:
             print(f"[Unknown_Filter] Rejected face due to brightness: {brightness}, allowing only greater than 40")
             return False
 
+        # print(f"[Unknown_Filter] Face passed pose and size checks: yaw={yaw}, pitch={pitch}, roll={roll}, size={w}x{h}, blur={blur_score}, brightness={brightness}")
         return True
 
     @staticmethod
@@ -170,7 +183,7 @@ class InsightFaceEngine:
         if abs(yaw) > 20:
             return -1
         
-        if blur < 80:
+        if blur < envConfig.BLUER_THRESHOLD:
             print(f"[Camera {camera_code}]rejected frame due to low blur=======", blur)
             return -1  # reject
 
