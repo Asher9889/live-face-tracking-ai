@@ -165,57 +165,196 @@ class InsightFaceEngine:
         # print(f"[Unknown_Filter] Face passed pose and size checks: yaw={yaw}, pitch={pitch}, roll={roll}, size={w}x{h}, blur={blur_score}, brightness={brightness}")
         return True
 
-    @staticmethod
-    def compute_face_quality(face, face_img, camera_code=None):
+    # def compute_face_quality(face, face_img, camera_code=None):
 
-        score = face["score"]
-        yaw, pitch, roll = face["pose"]
+    #     score = face["score"]
+    #     yaw, pitch, roll = face["pose"]
 
+    #     yaw = abs(yaw)
+    #     pitch = abs(pitch)
+    #     roll = abs(roll)
+
+    #     gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+
+    #     blur = cv2.Laplacian(gray, cv2.CV_64F).var()
+    #     brightness = np.mean(gray)
+
+    #     h, w = face_img.shape[:2]
+    #     size = min(h, w)
+
+    #     # HARD REJECTION
+    #     if yaw > 20:
+    #         return -1
+        
+    #     if blur < envConfig.BLUR_THRESHOLD:
+    #         print(f"[Camera {camera_code}]rejected frame due to low blur=======", blur)
+    #         return -1  # reject
+
+    #     gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    #     gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    #     sobel = np.mean(np.sqrt(gx**2 + gy**2))
+    #     if sobel < 20: # last is 40 getting 19 above
+    #         print(f"[Camera {camera_code}]rejected frame due to low sobel score=======", sobel)
+    #         return -1  # reject
+
+
+    #     if size < 30:
+    #         print(f"[Camera {camera_code}]rejected frame due to small size=======", size)
+    #         return -1  # reject
+
+    #     if brightness < 40 or brightness > 220:
+    #         print(f"[Camera {camera_code}]rejected frame due to brightness=======", brightness)
+    #         return -1  # reject
+
+    #     # NORMALIZATION (important)
+    #     blur_norm = min(blur / 300, 1.0)
+    #     brightness_norm = brightness / 255
+    #     size_norm = min(size / 200, 1.0)
+
+    #     pose_penalty = (yaw/25 + pitch/20 + roll/25) / 3
+    #     frontal_bonus = 1 - (yaw/20)
+
+    #     quality = (
+    #         score * 0.4
+    #         + blur_norm * 0.2
+    #         + brightness_norm * 0.1
+    #         + size_norm * 0.2
+    #         - pose_penalty * 0.3
+    #     )
+
+    #     return quality
+
+    def compute_face_quality(self, face, face_img, analysis=None):
+
+        # ----------------------------
+        # 1. DETECTION SCORE
+        # ----------------------------
+        score = float(face.get("score", 0.0))
+        score_norm = min(score, 1.0)
+
+        # ----------------------------
+        # 2. IMAGE METRICS
+        # ----------------------------
         gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
 
         blur = cv2.Laplacian(gray, cv2.CV_64F).var()
-        brightness = np.mean(gray)
+        if blur < envConfig.BLUR_THRESHOLD:
+            return -1  # only hard reject
 
+        blur_norm = min(blur / 300, 1.0)
+
+        brightness = float(np.mean(gray))
+        contrast = float(np.std(gray))
+
+        brightness_norm = np.exp(-((brightness - 128) ** 2) / (2 * 50 ** 2))
+        contrast_norm = min(contrast / 50, 1.0)
+
+        # ----------------------------
+        # 3. SIZE
+        # ----------------------------
         h, w = face_img.shape[:2]
         size = min(h, w)
 
-        # HARD REJECTION
-        if abs(yaw) > 20:
-            return -1
-        
-        if blur < envConfig.BLUR_THRESHOLD:
-            print(f"[Camera {camera_code}]rejected frame due to low blur=======", blur)
-            return -1  # reject
-
-        gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-        gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-        sobel = np.mean(np.sqrt(gx**2 + gy**2))
-        if sobel < 20: # last is 40 getting 19 above
-            print(f"[Camera {camera_code}]rejected frame due to low sobel score=======", sobel)
-            return -1  # reject
-
-
         if size < 30:
-            print(f"[Camera {camera_code}]rejected frame due to small size=======", size)
-            return -1  # reject
+            return -1
 
-        if brightness < 40 or brightness > 220:
-            print(f"[Camera {camera_code}]rejected frame due to brightness=======", brightness)
-            return -1  # reject
+        size_norm = min(size / 160, 1.0)
 
-        # NORMALIZATION (important)
-        blur_norm = min(blur / 300, 1.0)
-        brightness_norm = brightness / 255
-        size_norm = min(size / 200, 1.0)
+        # ----------------------------
+        # 4. POSE (NO FAKE VALUES)
+        # ----------------------------
+        pose_penalty = 0.0
+        frontal_bonus = 0.0
+        pose_conf = 0.0
 
-        pose_penalty = (abs(yaw)/25 + abs(pitch)/20 + abs(roll)/25) / 3
+        yaw = pitch = roll = None
 
+        # FaceMesh (best)
+        if analysis and analysis.get("valid") and analysis.get("yaw") is not None:
+            yaw = abs(analysis["yaw"])
+            pitch = abs(analysis["pitch"])
+            roll = abs(analysis["roll"])
+            pose_conf = 1.0
+
+        # InsightFace fallback
+        elif face.get("pose") is not None:
+            yaw, pitch, roll = face["pose"]
+            yaw, pitch, roll = abs(yaw), abs(pitch), abs(roll)
+            pose_conf = 0.7
+
+        # If pose exists → compute
+        if yaw is not None:
+
+            if yaw > 45:
+                return -1  # only extreme reject
+
+            yaw_penalty = (yaw / 30) ** 2
+            pitch_penalty = (pitch / 35) ** 2
+            roll_penalty = (roll / 35) ** 2
+
+            pose_penalty = (
+                yaw_penalty * 0.6 +
+                pitch_penalty * 0.25 +
+                roll_penalty * 0.15
+            )
+
+            frontal_bonus = np.exp(-(yaw ** 2) / (2 * 15 ** 2))
+
+        else:
+            # ❗ NO POSE → penalize uncertainty
+            pose_penalty = 0.4
+            frontal_bonus = 0.1
+            pose_conf = 0.3
+
+        # ----------------------------
+        # 5. FACEMESH SIGNALS (NO ASSUMPTIONS)
+        # ----------------------------
+        eye_score = None
+        expression_penalty = None
+        signal_conf = 0.0
+
+        if analysis and analysis.get("valid"):
+
+            if analysis.get("eye_score") is not None:
+                eye_score = analysis["eye_score"]
+                signal_conf += 0.5
+
+            if analysis.get("expression_score") is not None:
+                expression_penalty = analysis["expression_score"]
+                signal_conf += 0.5
+
+        signal_conf = min(signal_conf, 1.0)
+
+        # Missing signals → penalize (not assume good)
+        if eye_score is None:
+            eye_score = 0.5  # neutral-mid (not optimistic)
+
+        if expression_penalty is None:
+            expression_penalty = 0.2  # slight penalty
+
+        # ----------------------------
+        # 6. FINAL QUALITY
+        # ----------------------------
         quality = (
-            score * 0.4
+            score_norm * 0.2
             + blur_norm * 0.2
+            + contrast_norm * 0.1
             + brightness_norm * 0.1
-            + size_norm * 0.2
-            - pose_penalty * 0.3
+            + size_norm * 0.1
+            + frontal_bonus * 0.15
+            + eye_score * 0.1
+            - expression_penalty * 0.1
+            - pose_penalty * 0.25
         )
 
-        return quality
+        # ----------------------------
+        # 7. CONFIDENCE (UNCERTAINTY-AWARE)
+        # ----------------------------
+        confidence = 0.5 * pose_conf + 0.5 * signal_conf
+
+        # ensure it never collapses completely
+        confidence = max(0.3, confidence)
+
+        quality *= confidence
+
+        return float(quality)

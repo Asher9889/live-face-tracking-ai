@@ -73,11 +73,11 @@ class UnknownEmbeddingStore:
         if best_score < threshold:
             return None
 
-        # 🔥 margin check (important)
-        if len(scores) > 1:
-            second_score = np.partition(scores, -2)[-2]
-            if best_score - second_score < 0.05:
-                return None
+        # # 🔥 margin check (important)
+        # if len(scores) > 1:
+        #     second_score = np.partition(scores, -2)[-2]
+        #     if best_score - second_score < 0.05:
+        #         return None
 
         return {
             "unknown_id": self.unknown_ids[best_idx],   

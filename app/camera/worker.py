@@ -141,7 +141,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 tracker="botsort.yaml", 
                 classes=[0],            # Only track 'person' (COCO class 0)
                 verbose=False,
-                conf=0.25               # Adjust based on your environment
+                conf=0.25,               # Adjust based on your environment
             )
  
             # Get results
@@ -195,14 +195,15 @@ def _camera_loop(cam: CameraConfig) -> None:
                     if len(faces) == 0: 
                         continue
 
-                    # ---------------------------
-                    # FILTER FACES
-                    # ---------------------------
-                    # good_faces = [f for f in faces if insight_engine.is_good_face(f)]
-                    good_faces = []
-
+                    # face quality analysis (Not for gating, just for better embedding selection and weighting)
+                    faces_with_quality = []
                     for f in faces:
                         bbox = f["bbox"]
+                        score = f["score"]
+
+                        if score < 0.6:
+                            continue
+
                         x1, y1, x2, y2 = map(int, bbox)
 
                         x1 = max(0, x1)
@@ -215,50 +216,26 @@ def _camera_loop(cam: CameraConfig) -> None:
                         if face_img.size == 0:
                             continue
 
-                        # 🔥 NEW: Landmarker Analysis
+                        # ---------------------------
+                        # FaceMesh Analysis (NO GATING)
+                        # ---------------------------
                         analysis = face_landmarker_engine.analyze(face_img)
 
-                        if not face_landmarker_engine.is_valid_face(analysis):
-                            continue
-
-                        # (optional: keep your old filter as fallback)
-                        # if not insight_engine.is_good_face(f):
-                        #     continue
-                        print(f"[Camera {cam.code}][Person {person_id}] face passed landmarker quality gate")
-                        good_faces.append(f)
-
-                    if not good_faces:
-                        continue
-
-                    track_manager.face_detected(cam.code, person_id)
-
-                    # ---------------------------
-                    # COMPUTE QUALITY FOR ALL
-                    # ---------------------------
-                    faces_with_quality = []
-
-                    for f in good_faces:
-                        bbox = f["bbox"]
-                        x1, y1, x2, y2 = map(int, bbox)
-
-                        h, w = frame.shape[:2]
-                        x1 = max(0, x1)
-                        y1 = max(0, y1)
-                        x2 = min(w, x2)
-                        y2 = min(h, y2)
-
-                        face_img = frame[y1:y2, x1:x2]
-
-                        if face_img.size == 0:
-                            continue
-
-                        quality = insight_engine.compute_face_quality(f, face_img)
-
-                        if quality < 0.3: 
-                            print(f"[Camera {cam.code}][Person {person_id}] face quality below threshold: {quality:.3f}")
+                        # ---------------------------
+                        # Compute Quality (CORE LOGIC)
+                        # ---------------------------
+                        quality = insight_engine.compute_face_quality(
+                            f,
+                            face_img,
+                            analysis=analysis
+                        )
+                        print(f"[Camera {cam.code}][Person {person_id}] face quality: {quality:.3f}")
+                        if quality < 0.45:
                             continue
 
                         f["quality"] = quality
+                        f["analysis"] = analysis  # optional (for debugging / future use)
+
                         faces_with_quality.append(f)
 
                     if not faces_with_quality:

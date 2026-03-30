@@ -53,78 +53,156 @@ class FaceLandmarkerEngine:
     # -----------------------------
     # MAIN ENTRY
     # -----------------------------
-    # def analyze(self, face_img: np.ndarray) -> Optional[Dict]:
+
+    # def analyze(self, face_img: np.ndarray, debug=True) -> Optional[Dict]:
     #     if face_img is None or face_img.size == 0:
-    #         return None
+    #         if debug:
+    #             print("[Landmarker] ❌ Empty face image")
+    #         return {
+    #             "valid": False,
+    #             "landmarks": None
+    #         }
 
     #     h, w = face_img.shape[:2]
 
-    #     # Size check (early reject)
+    #     # Size check
     #     if min(h, w) < self.min_face_size:
-    #         return None
+    #         if debug:
+    #             print(f"[Landmarker] ❌ Rejected: small face ({w}x{h}) < {self.min_face_size}")
+    #         return {
+    #             "valid": False,
+    #             "landmarks": None
+    #         }
 
-    #     # Blur check (early reject)
-    #     if self._is_blurry(face_img):
-    #         return None
+    #     # Blur check
+    #     blur_score = cv2.Laplacian(cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
+    #     if blur_score < self.blur_threshold:
+    #         if debug:
+    #             print(f"[Landmarker] ❌ Rejected: blurry (score={blur_score:.2f} < {self.blur_threshold})")
+    #         return {
+    #             "valid": False,
+    #             "landmarks": None
+    #         }
 
     #     rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-
     #     mp_image = self._to_mp_image(rgb)
-    #     #
-
-    #     # mp_image = vision.Image(
-    #     #     image_format=vision.ImageFormat.SRGB,
-    #     #     data=rgb,
-    #     # )
 
     #     result = self.landmarker.detect(mp_image)
 
+    #     # print(f"[Landmarker] Detection result: {result.face_landmarks}, Blendshapes: {result.face_blendshapes}, Matrix")
+
     #     if not result.face_landmarks:
+    #         if debug:
+    #             print("[Landmarker] ❌ No landmarks detected (likely bad pose / occlusion)")
     #         return None
 
     #     return {
     #         "blendshapes": result.face_blendshapes[0] if result.face_blendshapes else None,
     #         "matrix": result.facial_transformation_matrixes[0] if result.facial_transformation_matrixes else None,
     #     }
+    
+    def analyze(self, face_img: np.ndarray, debug=False) -> Dict:
+        """
+        Extract FaceMesh signals WITHOUT hard rejection.
+        Designed for quality scoring (not gating).
+        """
 
-
-    def analyze(self, face_img: np.ndarray, debug=True) -> Optional[Dict]:
+        # 1. BASIC VALIDATION (minimal only)
         if face_img is None or face_img.size == 0:
-            if debug:
-                print("[Landmarker] ❌ Empty face image")
-            return None
+            return {
+                "valid": False,
+                "reason": "empty",
+            }
 
         h, w = face_img.shape[:2]
 
-        # Size check
-        if min(h, w) < self.min_face_size:
-            if debug:
-                print(f"[Landmarker] ❌ Rejected: small face ({w}x{h}) < {self.min_face_size}")
-            return None
+        # NOT rejecting small faces — just marking it
+        size = min(h, w)
 
-        # Blur check
-        blur_score = cv2.Laplacian(cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-        if blur_score < self.blur_threshold:
-            if debug:
-                print(f"[Landmarker] ❌ Rejected: blurry (score={blur_score:.2f} < {self.blur_threshold})")
-            return None
+        # 2. LIGHTWEIGHT PRE-COMPUTE (cheap signals)
+        gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
 
+        blur = cv2.Laplacian(gray, cv2.CV_64F).var()
+        brightness = float(np.mean(gray))
+        contrast = float(np.std(gray))
+
+        # 3. MEDIAPIPE INFERENCE
         rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
         mp_image = self._to_mp_image(rgb)
 
         result = self.landmarker.detect(mp_image)
 
-        # print(f"[Landmarker] Detection result: {result.face_landmarks}, Blendshapes: {result.face_blendshapes}, Matrix")
-
         if not result.face_landmarks:
-            if debug:
-                print("[Landmarker] ❌ No landmarks detected (likely bad pose / occlusion)")
-            return None
+            return {
+                "valid": False,
+                "reason": "no_landmarks",
+                "blur": blur,
+                "brightness": brightness,
+                "contrast": contrast,
+                "size": size,
+            }
 
+        # 4. EXTRACT BLENDSHAPES
+        blend_dict = None
+        if result.face_blendshapes:
+            blend_dict = {
+                b.category_name: float(b.score)
+                for b in result.face_blendshapes[0]
+            }
+
+        # 5. EXTRACT POSE (CRITICAL SIGNAL)
+        matrix = result.facial_transformation_matrixes[0] if result.facial_transformation_matrixes else None
+
+        yaw = pitch = roll = None
+        if matrix is not None:
+            pose = self._extract_pose(matrix)
+            if pose:
+                yaw, pitch, roll = pose
+
+        # 6. DERIVED SIGNALS (VERY IMPORTANT)
+
+        # Eye openness (0 = closed, 1 = open)
+        eye_score = None
+        if blend_dict:
+            left = blend_dict.get("eyeBlinkLeft", 0.0)
+            right = blend_dict.get("eyeBlinkRight", 0.0)
+            eye_score = 1.0 - max(left, right)
+
+        expression_score = 0.0
+        if blend_dict:
+            smile = blend_dict.get("mouthSmileLeft", 0.0) + blend_dict.get("mouthSmileRight", 0.0)
+            mouth_open = blend_dict.get("jawOpen", 0.0)
+            expression_score = max(smile, mouth_open)
+
+        frontal_score = None
+        if yaw is not None:
+            frontal_score = max(0.0, 1.0 - abs(yaw) / 30.0)
+
+        # 7. RETURN STRUCTURED SIGNALS
         return {
-            "blendshapes": result.face_blendshapes[0] if result.face_blendshapes else None,
-            "matrix": result.facial_transformation_matrixes[0] if result.facial_transformation_matrixes else None,
+            "valid": True,
+
+            # raw signals
+            "blur": blur,
+            "brightness": brightness,
+            "contrast": contrast,
+            "size": size,
+
+            # pose
+            "yaw": yaw,
+            "pitch": pitch,
+            "roll": roll,
+
+            # derived signals
+            "eye_score": eye_score,
+            "expression_score": expression_score,
+            "frontal_score": frontal_score,
+
+            # raw data (optional, for debug)
+            "blendshapes": blend_dict,
+            "matrix": matrix,
         }
+    
     # -----------------------------
     # QUALITY GATE
     # -----------------------------
