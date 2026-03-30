@@ -27,7 +27,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 path = os.path.join(BASE_DIR,"../../models/facemesh/face_landmarker.task")
 path = os.path.abspath(path)
 
-model = YOLO("yolov8n.pt")
+model = YOLO("yolov8n.pt")   
 insight_engine = InsightFaceEngine()
 publisher = EventPublisher(redis_client)
 face_landmarker_engine = FaceLandmarkerEngine(model_path=path) 
