@@ -22,5 +22,8 @@ class EnvConfig:
     MAX_UNKNOWN_FRAMES = 5
     MIN_FACE_SIZE = 60 # pixels
     BLUR_THRESHOLD = 50
+    MIN_UNKNOWN_CREATION_QUALITY = float(os.getenv("MIN_UNKNOWN_CREATION_QUALITY"))
+    MIN_UNKNOWN_CREATE_FRAMES = int(os.getenv("MIN_UNKNOWN_CREATE_FRAMES", "2"))
+    SCRFD_THRESHOLD = float(os.getenv("SCRFD_THRESHOLD", "0.50"))
 
 envConfig = EnvConfig()  

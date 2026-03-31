@@ -1,5 +1,7 @@
 import cv2
 import numpy as np
+from datetime import datetime
+
 
 def is_blurry(frame, threshold=80):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -15,6 +17,9 @@ def motion_score(prev, curr):
 def is_stable_embedding(track_embedding_state, person_id, embedding, quality):
     state = track_embedding_state.get(person_id)
 
+    # ----------------------------
+    # INIT
+    # ----------------------------
     if state is None:
         track_embedding_state[person_id] = {
             "ref": embedding,
@@ -22,6 +27,7 @@ def is_stable_embedding(track_embedding_state, person_id, embedding, quality):
             "samples": [(embedding, quality)],
             "last_quality": quality
         }
+        print(f"[IsStable][Person {person_id}] init accept (quality={quality:.3f})")
         return True
 
     ref = state["ref"]
@@ -31,140 +37,64 @@ def is_stable_embedding(track_embedding_state, person_id, embedding, quality):
     sim_ref = float(np.dot(embedding, ref))
     sim_last = float(np.dot(embedding, last))
 
-    # adaptive identity check
-    if sim_ref < (0.40 if len(state["samples"]) > 2 else 0.40):
-        print(f"[Is_Stable_Embedding]Rejected embedding for person {person_id} due to low similarity to reference: {sim_ref:.2f} threshold: {(0.40 if len(state['samples']) > 2 else 0.40):.2f}")
+    # ----------------------------
+    # 1. STRONG IDENTITY CHECK
+    # ----------------------------
+    if sim_ref < 0.45: ## How similar is this face to the overall identity so far?
+        print(f"[IsStable][Person {person_id}] rejected: low sim to ref {sim_ref:.3f} < 0.45")
         return False
 
-    # relative improvement
-    quality_improved = quality > last_quality * 1.15
-
-    if sim_last < 0.40 and not quality_improved:
-        print(f"[Is_Stable_Embedding]Rejected embedding for person {person_id} due to low similarity to last known embedding: {sim_last:.2f} threshold: 0.40 and no quality improvement: {quality_improved}")
+    # ----------------------------
+    # 2. TEMPORAL STABILITY
+    # ----------------------------
+    if sim_last < 0.40: # “How similar is this face to the previous frame?”
+        print(f"[IsStable][Person {person_id}] rejected: temporal instability sim_last={sim_last:.3f} < 0.40")
         return False
 
-    # accept
+    # ----------------------------
+    # 3. QUALITY SAFETY (no override)
+    # ----------------------------
+    if quality < last_quality * 0.7:
+        print(f"[IsStable][Person {person_id}] rejected: quality drop {quality:.3f} < {last_quality * 0.7:.3f} (last={last_quality:.3f})")
+        return False
+
+    # ----------------------------
+    # 4. ACCEPT
+    # ----------------------------
     state["samples"].append((embedding, quality))
 
-    # top-K with diversity
+    # ----------------------------
+    # 5. DIVERSITY FILTER
+    # ----------------------------
     filtered = []
     for emb, q in sorted(state["samples"], key=lambda x: x[1], reverse=True):
-        if all(np.dot(emb, e) < 0.95 for e, _ in filtered):
+        if all(np.dot(emb, e) < 0.90 for e, _ in filtered):
             filtered.append((emb, q))
         if len(filtered) >= 5:
             break
 
     state["samples"] = filtered
 
-    # recompute reference
+    # ----------------------------
+    # 6. REFERENCE UPDATE (SAFE)
+    # ----------------------------
     top_embeddings = [e for e, _ in state["samples"]]
-    ref_new = np.mean(top_embeddings, axis=0)
 
-    norm = np.linalg.norm(ref_new)
-    if norm > 0:
-        ref_new /= norm
-
-    state["ref"] = ref_new
-
-    # update last only if not degrading badly
-    if quality >= last_quality * 0.9:
-        state["last"] = embedding
-        state["last_quality"] = quality
-
-    return True
-    state = track_embedding_state.get(person_id)
-
-    if state is None:
-        track_embedding_state[person_id] = {
-            "ref": embedding,
-            "last": embedding,
-            "samples": [(embedding, quality)],
-            "last_quality": quality
-        }
-        return True
-
-    ref = state["ref"]
-    last = state["last"]
-    last_quality = state["last_quality"]
-
-    sim_ref = float(np.dot(embedding, ref))
-    sim_last = float(np.dot(embedding, last))
-
-    # 🚫 hard identity check (never relax this too much)
-    if sim_ref < 0.5:
-        return False
-
-    # 🔥 improvement override
-    quality_improved = quality > last_quality + 0.1
-
-    if sim_last < 0.7 and not quality_improved:
-        return False
-
-    # ✅ accept
-    state["samples"].append((embedding, quality))
-
-    # keep only top-K by quality
-    state["samples"] = sorted(
-        state["samples"],
-        key=lambda x: x[1],  # sort by quality
-        reverse=True
-    )[:5]  # K = 5 (tune this)
-
-    if len(state["history"]) > 10:
-        state["history"].pop(0)
-
-    top_embeddings = [e for e, q in state["samples"]]
     ref_new = np.mean(top_embeddings, axis=0)
     ref_new /= np.linalg.norm(ref_new)
 
     state["ref"] = ref_new
+
+    # ----------------------------
+    # 7. UPDATE LAST
+    # ----------------------------
     state["last"] = embedding
     state["last_quality"] = quality
 
-    return True   
-    state = track_embedding_state.get(person_id)
-
-    # First frame → accept
-    if state is None:
-        track_embedding_state[person_id] = {
-            "ref": embedding,
-            "last": embedding,
-            "history": [embedding]
-        }
-        return True
-
-    ref = state["ref"]
-    last = state["last"]
-
-    sim_ref = float(np.dot(embedding, ref))
-    sim_last = float(np.dot(embedding, last))
-
-    # hard rejection (wrong face / noise)
-    if sim_ref < 0.5:
-        print(f"Rejected embedding for person {person_id} due to low similarity to reference: {sim_ref:.2f}")
-        return False
-
-    # temporal instability (sudden jump)
-    if sim_last < 0.6:
-        print(f"Rejected embedding for person {person_id} due to temporal instability: {sim_last:.2f}")
-        return False
-
-    # accept → update state
-    state["history"].append(embedding)
-
-    # keep bounded memory
-    if len(state["history"]) > 10:
-        state["history"].pop(0)
-
-    # update reference (mean)
-    ref_new = np.mean(state["history"], axis=0)
-    ref_new /= np.linalg.norm(ref_new)
-
-    state["ref"] = ref_new
-    state["last"] = embedding
+    print(f"[IsStable][Person {person_id}] accepted (sim_ref={sim_ref:.3f} sim_last={sim_last:.3f} quality={quality:.3f})")
 
     return True
- 
+
 def expand_bbox(bbox, frame_w, frame_h):
     x1, y1, x2, y2 = bbox
 
@@ -197,6 +127,47 @@ def score_face(face, roi_shape):
 
     return 0.7 * face["quality"] + 0.3 * dist_score
 
+
+def select_best_face(faces_with_quality):
+    """
+    Select best face deterministically and stably.
+    """
+
+    if not faces_with_quality:
+        return None
+
+    # ----------------------------
+    # 1. SORT (multi-criteria)
+    # ----------------------------
+    faces_sorted = sorted(
+        faces_with_quality,
+        key=lambda f: (
+            f["quality"],            # primary
+            f["score"],              # detection confidence
+            (f["bbox"][2] - f["bbox"][0]) * (f["bbox"][3] - f["bbox"][1])  # size
+        ),
+        reverse=True
+    )
+
+    best = faces_sorted[0]
+
+    # ----------------------------
+    # 2. DOMINANCE CHECK (anti-noise)
+    # ----------------------------
+    if len(faces_sorted) > 1:
+        second = faces_sorted[1]
+
+        # if too close → unstable selection
+        if abs(best["quality"] - second["quality"]) < 0.05:
+            # fallback to larger face (more reliable embedding)
+            best_area = (best["bbox"][2] - best["bbox"][0]) * (best["bbox"][3] - best["bbox"][1])
+            second_area = (second["bbox"][2] - second["bbox"][0]) * (second["bbox"][3] - second["bbox"][1])
+
+            if second_area > best_area:
+                best = second
+
+    return best
+
 def crop_with_margin(frame, x1, y1, x2, y2, margin=0.2):
     h, w = frame.shape[:2]
 
@@ -212,3 +183,23 @@ def crop_with_margin(frame, x1, y1, x2, y2, margin=0.2):
     ny2 = min(h, y2 + my)
 
     return frame[ny1:ny2, nx1:nx2]
+
+def get_pose_name(yaw: float | None) -> str | None:
+    if yaw is None:
+        return None
+
+    if yaw <= -20:
+        return "left"
+    elif -20 < yaw <= -10:
+        return "left_mid"
+    elif -10 < yaw < 10:
+        return "frontal"
+    elif 10 <= yaw < 20:
+        return "right_mid"
+    elif yaw >= 20:
+        return "right"
+
+    return None
+
+def now_ms():
+    return datetime.now().strftime("%H:%M:%S.%f")[:-3]

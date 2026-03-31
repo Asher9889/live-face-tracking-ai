@@ -105,3 +105,35 @@ Match?
 **Image (add later):**
 
 ![Roll](roll.png)
+
+
+# 📄 Unknown Tracking Pipeline
+---
+
+## 1. 🎯 System Overview
+- You have **two parallel identity systems**:
+1. Known Identity (employees)
+2. Unknown Identity (dynamic clustering)
+---
+
+## 2. 🧩 Core Components
+
+### 🔹 Detection
+- YOLO (`yolov8n.pt`) → detects persons
+- BoT-SORT → assigns `track_id`
+
+### 🔹 Face Engine
+- InsightFace (SCRFD + ArcFace)
+- FaceMesh (for pose + quality signals)
+
+### 🔹 Tracking State
+
+```python
+track_known_buffer        # temp embeddings for known recognition 
+track_state               # lifecycle tracking
+track_identity            # known identities
+track_unknown_identity    # unknown identities
+track_unknown_buffer      # unknown temp storage
+track_embedding_state     # stability tracking
+
+

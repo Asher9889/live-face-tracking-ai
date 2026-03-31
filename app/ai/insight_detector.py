@@ -78,7 +78,7 @@ class InsightFaceEngine:
 
             yaw, pitch, roll = face.pose
             
-            print(f"[{now}][Detect_And_Generate-Embedding][Camera {camera_code}] Detected face with score: {score:.2f}, size: {width}x{height}, pose: (yaw={yaw:.1f}, pitch={pitch:.1f}, roll={roll:.1f}), gender: {face.gender}")
+            # print(f"[{now}][Detect_And_Generate-Embedding][Camera {camera_code}] Detected face with score: {score:.2f}, size: {width}x{height}, pose: (yaw={yaw:.1f}, pitch={pitch:.1f}, roll={roll:.1f}), gender: {face.gender}")
 
             results.append({
                 "bbox": global_bbox,

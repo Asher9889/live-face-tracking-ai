@@ -1,22 +1,260 @@
+# import numpy as np
+# import requests
+# import json
+
+# from app.config.config import envConfig
+
+# class UnknownEmbeddingStore:
+
+#     def __init__(self, api_url):
+#         self.api_url = api_url
+
+#         self.unknown_ids = []
+#         self.id_to_index = {}
+
+#         self.embeddings = np.empty((0, 512), dtype=np.float32)
+#         self.counts = []
+
+#     # ---------------------------------------------------
+#     # Load unknown identities from Node API on startup
+#     # ---------------------------------------------------
+#     def load_unknown_embeddings(self):
+
+#         print("[AI] Loading unknown embeddings...")
+
+#         response = requests.get(
+#             self.api_url,
+#             headers={
+#                 "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
+#             }
+#         )
+
+#         data = response.json()
+
+#         if not data.get("success"):
+#             raise Exception("Failed to load unknown embeddings")
+
+#         unknowns = data["data"]
+
+#         vectors = []
+
+#         for u in unknowns:
+
+#             emb = np.array(u["representativeEmbedding"], dtype=np.float32)
+#             emb = emb / np.linalg.norm(emb)
+
+#             idx = len(self.unknown_ids)
+
+#             self.unknown_ids.append(u["id"])
+#             self.id_to_index[u["id"]] = idx
+#             self.counts.append(u["embeddingCount"])
+
+#             vectors.append(emb)
+
+#         if vectors:
+#             self.embeddings = np.stack(vectors)
+
+#         print(f"[AI] Loaded {len(self.unknown_ids)} unknown identities")
+
+#     # ---------------------------------------------------
+#     # Search unknown identities
+#     # ---------------------------------------------------
+#     def find_match(self, embedding, threshold=0.50):
+
+#         if self.embeddings.shape[0] == 0:
+#             return None
+
+#         scores = np.dot(self.embeddings, embedding)
+
+#         best_idx = np.argmax(scores)
+#         best_score = scores[best_idx]
+
+#         # threshold check
+#         if best_score < threshold:
+#             return None
+
+#         # # 🔥 margin check (important)
+#         # if len(scores) > 1:
+#         #     second_score = np.partition(scores, -2)[-2]
+#         #     if best_score - second_score < 0.05:
+#         #         return None
+
+#         return {
+#             "unknown_id": self.unknown_ids[best_idx],   
+#             "similarity": float(best_score)
+#         }
+#     # ---------------------------------------------------
+#     # Create new unknown identity
+#     # ---------------------------------------------------
+#     def add_unknown(self, centroid_embedding, image_bytes, timestamp, camera_code, embedding_count):
+#         try:
+#             centroid_embedding = centroid_embedding / np.linalg.norm(centroid_embedding)
+
+#             files = {
+#                 "face": ("face.jpg", image_bytes, "image/jpeg")
+#             }
+
+#             data = {
+#                 "representativeEmbedding": json.dumps(centroid_embedding.tolist()),
+#                 "timestamp":  str(timestamp),
+#                 "cameraCode": camera_code,
+#                 "embeddingCount": embedding_count
+#             }
+
+#             response = requests.post(
+#                 envConfig.NODE_CREATE_UNKNOWN_URL,
+#                 files=files,
+#                 data=data,
+#                 headers={
+#                     "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
+#                 }
+#             )
+
+#             data = response.json()
+
+#             if not data.get("success"):
+#                 print("[AI] Node API returned error:", data)
+#                 return None
+
+#             unknown_id = data["data"]["unknownId"]
+
+#             idx = len(self.unknown_ids)
+
+#             self.unknown_ids.append(unknown_id)
+#             self.id_to_index[unknown_id] = idx
+
+#             self.embeddings = np.vstack([self.embeddings, centroid_embedding])
+#             self.counts.append(1)
+
+#             return unknown_id
+
+#         except requests.exceptions.RequestException as e:
+#             print("[AI] Node API request failed:", e)
+
+#         except Exception as e:
+#             print("[AI] Unknown creation error:", e)
+
+#         return None
+
+#     # ---------------------------------------------------
+#     # Update existing unknown identity
+#     # ---------------------------------------------------
+#     def update_unknown(self, unknown_id, centroid, timestamp, camera_code, image_bytes):
+
+#         # idx = self.id_to_index[unknown_id]
+
+#         # centroid = self.embeddings[idx]
+#         # count = self.counts[idx]
+
+#         # updated = (centroid * count + new_embedding) / (count + 1)
+#         # updated = updated / np.linalg.norm(updated)
+
+#         # self.embeddings[idx] = updated
+#         # self.counts[idx] += 1
+
+#         files = {
+#             "face": ("face.jpg", image_bytes, "image/jpeg")
+#         }
+#         data = {
+#             "unknownId": unknown_id,
+#             "meanEmbedding":  json.dumps(centroid.tolist()),
+#             "timestamp": str(timestamp),
+#             "cameraCode": str(camera_code),
+#         }
+
+#         response = requests.post(
+#             envConfig.NODE_UPDATE_UNKNOWN_URL,
+#             files=files,
+#             data=data,
+#             headers={
+#                 "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
+#             }
+#         )
+
+#         return response
+
+
+# unknown_embedding_store = UnknownEmbeddingStore(api_url=envConfig.NODE_LOAD_UNKNOWN_EMBEDDINGS_URL)
+
+
+
+
 import numpy as np
 import requests
 import json
+import time
 
 from app.config.config import envConfig
 
+
 class UnknownEmbeddingStore:
 
-    def __init__(self, api_url):
+    def __init__(self, api_url, embedding_dim=512):
         self.api_url = api_url
 
+        # in-memory state
         self.unknown_ids = []
         self.id_to_index = {}
 
-        self.embeddings = np.empty((0, 512), dtype=np.float32)
+        self.embeddings = np.empty((0, embedding_dim), dtype=np.float32)
         self.counts = []
 
+        # recent duplicate protection
+        self.recent_cache = {}  # unknown_id -> timestamp
+
+        # config
+        self.match_threshold = 0.50
+        self.margin_threshold = 0.03
+        self.duplicate_threshold = 0.60
+        self.recent_window_sec = 10
+
     # ---------------------------------------------------
-    # Load unknown identities from Node API on startup
+    # Utils
+    # ---------------------------------------------------
+    def _safe_normalize(self, emb):
+        norm = np.linalg.norm(emb)
+        if norm == 0:
+            return None
+        return emb / norm
+
+    def _post(self, url, files, data):
+        try:
+            return requests.post(
+                url,
+                files=files,
+                data=data,
+                headers={
+                    "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
+                },
+                timeout=3
+            )
+        except Exception as e:
+            print("[AI] API request failed:", e)
+            return None
+
+    # def _blend_embedding(self, old, new, count):
+    #     updated = (old * count + new) / (count + 1)
+    #     norm = np.linalg.norm(updated)
+    #     if norm == 0:
+    #         return old
+    #     return updated / norm
+
+    def _quality_to_weight(self, q: float) -> float:
+        if q <= 0:
+            return 0.0
+
+        return min(round(q, 5), 10.0)
+
+
+    def _blend_embedding(self, old, new, old_weight, new_weight):
+        updated = (old * old_weight + new * new_weight) / (old_weight + new_weight)
+        norm = np.linalg.norm(updated)
+        if norm == 0:
+            return old
+        return updated / norm
+
+    # ---------------------------------------------------
+    # Load from Node
     # ---------------------------------------------------
     def load_unknown_embeddings(self):
 
@@ -26,7 +264,8 @@ class UnknownEmbeddingStore:
             self.api_url,
             headers={
                 "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
-            }
+            },
+            timeout=5
         )
 
         data = response.json()
@@ -34,20 +273,19 @@ class UnknownEmbeddingStore:
         if not data.get("success"):
             raise Exception("Failed to load unknown embeddings")
 
-        unknowns = data["data"]
-
         vectors = []
 
-        for u in unknowns:
-
+        for u in data["data"]:
             emb = np.array(u["representativeEmbedding"], dtype=np.float32)
-            emb = emb / np.linalg.norm(emb)
+            emb = self._safe_normalize(emb)
+            if emb is None:
+                continue
 
             idx = len(self.unknown_ids)
 
             self.unknown_ids.append(u["id"])
             self.id_to_index[u["id"]] = idx
-            self.counts.append(u["embeddingCount"])
+            self.counts.append(u.get("embeddingCount", 1))
 
             vectors.append(emb)
 
@@ -57,11 +295,15 @@ class UnknownEmbeddingStore:
         print(f"[AI] Loaded {len(self.unknown_ids)} unknown identities")
 
     # ---------------------------------------------------
-    # Search unknown identities
+    # Match unknown
     # ---------------------------------------------------
-    def find_match(self, embedding, threshold=0.50):
+    def find_match(self, embedding):
 
         if self.embeddings.shape[0] == 0:
+            return None
+
+        embedding = self._safe_normalize(embedding)
+        if embedding is None:
             return None
 
         scores = np.dot(self.embeddings, embedding)
@@ -69,109 +311,176 @@ class UnknownEmbeddingStore:
         best_idx = np.argmax(scores)
         best_score = scores[best_idx]
 
-        # threshold check
-        if best_score < threshold:
+        if best_score < self.match_threshold:
             return None
 
-        # # 🔥 margin check (important)
-        # if len(scores) > 1:
-        #     second_score = np.partition(scores, -2)[-2]
-        #     if best_score - second_score < 0.05:
-        #         return None
-
-        return {
-            "unknown_id": self.unknown_ids[best_idx],   
-            "similarity": float(best_score)
-        }
-    # ---------------------------------------------------
-    # Create new unknown identity
-    # ---------------------------------------------------
-    def add_unknown(self, centroid_embedding, image_bytes, timestamp, camera_code, embedding_count):
-        try:
-            centroid_embedding = centroid_embedding / np.linalg.norm(centroid_embedding)
-
-            files = {
-                "face": ("face.jpg", image_bytes, "image/jpeg")
-            }
-
-            data = {
-                "representativeEmbedding": json.dumps(centroid_embedding.tolist()),
-                "timestamp":  str(timestamp),
-                "cameraCode": camera_code,
-                "embeddingCount": embedding_count
-            }
-
-            response = requests.post(
-                envConfig.NODE_CREATE_UNKNOWN_URL,
-                files=files,
-                data=data,
-                headers={
-                    "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
-                }
-            )
-
-            data = response.json()
-
-            if not data.get("success"):
-                print("[AI] Node API returned error:", data)
+        # margin check (VERY important)
+        if len(scores) > 1:
+            second_score = np.partition(scores, -2)[-2]
+            if best_score - second_score < self.margin_threshold:
                 return None
 
-            unknown_id = data["data"]["unknownId"]
+        return {
+            "unknown_id": self.unknown_ids[best_idx],
+            "similarity": float(best_score),
+            "index": int(best_idx)
+        }
 
-            idx = len(self.unknown_ids)
+    # ---------------------------------------------------
+    # Duplicate protection (recent window)
+    # ---------------------------------------------------
+    def _check_recent_duplicate(self, embedding):
+        now = time.time()
 
-            self.unknown_ids.append(unknown_id)
-            self.id_to_index[unknown_id] = idx
+        for uid, ts in list(self.recent_cache.items()):
+            if now - ts > self.recent_window_sec:
+                del self.recent_cache[uid]
+                continue
 
-            self.embeddings = np.vstack([self.embeddings, centroid_embedding])
-            self.counts.append(1)
+            idx = self.id_to_index.get(uid)
+            if idx is None:
+                continue
 
-            return unknown_id
-
-        except requests.exceptions.RequestException as e:
-            print("[AI] Node API request failed:", e)
-
-        except Exception as e:
-            print("[AI] Unknown creation error:", e)
+            sim = np.dot(self.embeddings[idx], embedding)
+            if sim > self.duplicate_threshold:
+                return uid
 
         return None
 
     # ---------------------------------------------------
-    # Update existing unknown identity
+    # Create new unknown
     # ---------------------------------------------------
-    def update_unknown(self, unknown_id, centroid, timestamp, camera_code, image_bytes):
+    def add_unknown(self, centroid, image_bytes, timestamp, camera_code, embedding_count, poses):
 
-        # idx = self.id_to_index[unknown_id]
+        centroid = self._safe_normalize(centroid)
+        if centroid is None:
+            return None
 
-        # centroid = self.embeddings[idx]
-        # count = self.counts[idx]
-
-        # updated = (centroid * count + new_embedding) / (count + 1)
-        # updated = updated / np.linalg.norm(updated)
-
-        # self.embeddings[idx] = updated
-        # self.counts[idx] += 1
+        # check duplicate before API call
+        dup = self._check_recent_duplicate(centroid)
+        if dup:
+            return dup
 
         files = {
             "face": ("face.jpg", image_bytes, "image/jpeg")
         }
+
         data = {
-            "unknownId": unknown_id,
-            "meanEmbedding":  json.dumps(centroid.tolist()),
+            "representativeEmbedding": json.dumps(centroid.tolist()),
             "timestamp": str(timestamp),
-            "cameraCode": str(camera_code),
+            "cameraCode": camera_code,
+            "embeddingCount": embedding_count,
+            "poses": json.dumps(list(poses))
         }
 
-        response = requests.post(
-            envConfig.NODE_UPDATE_UNKNOWN_URL,
-            files=files,
-            data=data,
-            headers={
-                "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
-            }
+        response = self._post(envConfig.NODE_CREATE_UNKNOWN_URL, files, data)
+
+        if not response:
+            return None
+
+        data = response.json()
+        if not data.get("success"):
+            print("[AI] Node API error:", data)
+            return None
+
+        unknown_id = data["data"]["unknownId"]
+
+        # update local state
+        idx = len(self.unknown_ids)
+        self.unknown_ids.append(unknown_id)
+        self.id_to_index[unknown_id] = idx
+
+        self.embeddings = np.vstack([self.embeddings, centroid])
+        self.counts.append(1)
+
+        self.recent_cache[unknown_id] = time.time()
+
+        return unknown_id
+
+    # ---------------------------------------------------
+    # Update existing unknown
+    # ---------------------------------------------------
+    def update_unknown(self, unknown_id, centroid, timestamp, camera_code, image_bytes, poses, quality):
+
+        idx = self.id_to_index.get(unknown_id)
+        if idx is None:
+            return None
+
+        centroid = self._safe_normalize(centroid)
+        if centroid is None:
+            return None
+
+        # blend embedding locally
+        # use count as old weight, and NEW QUALITY as new weight
+        new_quality = self._quality_to_weight(quality)  # fallback (we'll improve next)
+        updated = self._blend_embedding(
+            self.embeddings[idx],
+            centroid,
+            old_weight = self.counts[idx],
+            new_weight = self.counts[idx] * new_quality
         )
 
-        return response
+        self.embeddings[idx] = updated
+        self.counts[idx] += 1
+
+        files = {
+            "face": ("face.jpg", image_bytes, "image/jpeg")
+        }
+
+        data = {
+            "unknownId": unknown_id,
+            "meanEmbedding": json.dumps(updated.tolist()),
+            "timestamp": str(timestamp),
+            "cameraCode": camera_code,
+            "poses": json.dumps(list(poses))
+        }
+
+        self._post(envConfig.NODE_UPDATE_UNKNOWN_URL, files, data)
+
+        self.recent_cache[unknown_id] = time.time()
+
+        return unknown_id
+
+    # ---------------------------------------------------
+    # Unified API (USE THIS IN PIPELINE)
+    # ---------------------------------------------------
+    def register_or_update(self, centroid, image_bytes, timestamp, camera_code, embedding_count, poses):
+
+        centroid = self._safe_normalize(centroid)
+        if centroid is None:
+            return None
+
+        match = self.find_match(centroid)
+
+        if match:
+            return self.update_unknown(
+                match["unknown_id"],
+                centroid,
+                timestamp,
+                camera_code,
+                image_bytes,
+                poses
+            )
+
+        return self.add_unknown(
+            centroid,
+            image_bytes,
+            timestamp,
+            camera_code,
+            embedding_count,
+            poses
+        )
+
+    # ---------------------------------------------------
+    # Debug / Metrics
+    # ---------------------------------------------------
+    def stats(self):
+        return {
+            "total_unknowns": len(self.unknown_ids),
+            "avg_embeddings_per_identity": float(np.mean(self.counts)) if self.counts else 0
+        }
 
 
-unknown_embedding_store = UnknownEmbeddingStore(api_url=envConfig.NODE_LOAD_UNKNOWN_EMBEDDINGS_URL)
+unknown_embedding_store = UnknownEmbeddingStore(
+    api_url=envConfig.NODE_LOAD_UNKNOWN_EMBEDDINGS_URL
+)
