@@ -2,7 +2,7 @@ import numpy as np
 import time
 
 class UniqueFaceRepresentationBuilder:
-    def __init__(self, max_size=5, sim_threshold=0.90, min_frames=3, min_poses=2):
+    def __init__(self, max_size=7, sim_threshold=0.90, min_frames=3, min_poses=1):
         self.max_size = max_size
         self.sim_threshold = sim_threshold
         self.min_frames = min_frames
@@ -21,41 +21,51 @@ class UniqueFaceRepresentationBuilder:
     # ----------------------------
     # ADD FACE
     # ----------------------------
+
     def add(self, buffer, embedding, quality, pose_bucket, img=None):
         if buffer is None:
             buffer = []
 
         timestamp = time.time()
 
-        # 1. Replace same pose (upgrade)
-        for i, item in enumerate(buffer):
-            if item["pose_bucket"] == pose_bucket:
-                if quality > item["quality"]:
-                    buffer[i] = {
-                        "embedding": embedding,
-                        "quality": quality,
-                        "pose_bucket": pose_bucket,
-                        "img": img,
-                        "ts": timestamp
-                    }
-                return buffer
-
-        # 2. Diversity check
-        if not self._is_diverse(buffer, embedding):
-            for i, item in enumerate(buffer):
-                sim = float(np.dot(item["embedding"], embedding))
-                if sim > self.sim_threshold and quality > item["quality"]:
-                    buffer[i] = {
-                        "embedding": embedding,
-                        "quality": quality,
-                        "pose_bucket": pose_bucket,
-                        "img": img,
-                        "ts": timestamp
-                    }
-                    break
+        # ----------------------------
+        # PHASE 1: BOOTSTRAP
+        # ----------------------------
+        if len(buffer) < self.min_frames:
+            buffer.append({
+                "embedding": embedding,
+                "quality": quality,
+                "pose_bucket": pose_bucket,
+                "img": img,
+                "ts": timestamp
+            })
             return buffer
 
-        # 3. Add new
+        # ----------------------------
+        # PHASE 2/3: CONTROLLED MODE
+        # ----------------------------
+
+        # 1. SAME POSE → replace best
+        same_pose_items = [i for i, item in enumerate(buffer) if item["pose_bucket"] == pose_bucket]
+
+        if same_pose_items:
+            best_idx = max(same_pose_items, key=lambda i: buffer[i]["quality"])
+
+            if quality > buffer[best_idx]["quality"]:
+                buffer[best_idx] = {
+                    "embedding": embedding,
+                    "quality": quality,
+                    "pose_bucket": pose_bucket,
+                    "img": img,
+                    "ts": timestamp
+                }
+            return self._trim(buffer)
+
+        # 2. DIVERSITY CHECK (ONLY AFTER BOOTSTRAP)
+        if not self._is_diverse(buffer, embedding):
+            return buffer
+
+        # 3. ADD NEW POSE
         buffer.append({
             "embedding": embedding,
             "quality": quality,
@@ -64,11 +74,9 @@ class UniqueFaceRepresentationBuilder:
             "ts": timestamp
         })
 
-        # 4. Maintain size
-        buffer = self._trim(buffer)
-
-        return buffer
-
+        return self._trim(buffer)
+    
+    
     # ----------------------------
     # SIZE CONTROL
     # ----------------------------

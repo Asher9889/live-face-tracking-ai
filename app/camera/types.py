@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import time
 from typing import Tuple
+from enum import Enum
 
 @dataclass
 class CameraConfig:
@@ -31,6 +32,7 @@ class Detection:
     pose: Tuple[float, float, float]
     age: int | None
     gender: int | None
+
 @dataclass
 class FaceCrop:
     camera_code: str
@@ -38,3 +40,15 @@ class FaceCrop:
     crop: np.ndarray
     bbox: np.ndarray
     landmarks: np.ndarray
+
+@dataclass
+class TrackState(str, Enum):
+    COLLECTING_FRAME= "COLLECTING_FRAME"
+
+    COLLECTING_KNOWN = "COLLECTING_KNOWN"
+    MATCHED_KNOWN = "MATCHED_KNOWN"
+    
+    COLLECTING_UNKNOWN = "COLLECTING_UNKNOWN"
+    MATCHED_UNKNOWN = "MATCHED_UNKNOWN"
+    
+    UPDATING_UNKNOWN = "UPDATING_UNKNOWN"
