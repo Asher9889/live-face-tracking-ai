@@ -41,7 +41,6 @@ class FaceCrop:
     bbox: np.ndarray
     landmarks: np.ndarray
 
-@dataclass
 class TrackState(str, Enum):
     COLLECTING_FRAME= "COLLECTING_FRAME"
 
