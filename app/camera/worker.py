@@ -6,7 +6,7 @@ from typing import List
 import random
 from enum import Enum
 import numpy as np
-from app.camera.helper import is_stable_embedding, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms, build_pose_payload
+from app.camera.helper import is_stable_embedding, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms
 from app.camera.types import CameraConfig, TrackState
 from app.config import FRAME_RATE
 
@@ -18,7 +18,7 @@ from app.camera.extract_person_roi import extract_person_roi
 from app.config.config import envConfig
 from app.events.publisher import EventPublisher
 from app.recognition import embedding_store, unknown_embedding_store
-from app.tracking.track_manager import TrackManager
+from app.tracking.track_manager import TrackEventEmitter
 from app.database import redis_client
 
 from app.camera.unique_face_builder import UniqueFaceRepresentationBuilder
@@ -91,7 +91,7 @@ def _camera_loop(cam: CameraConfig) -> None:
     target_fps = int(FRAME_RATE)
     interval = 1.0 / target_fps
 
-    track_manager = TrackManager(publisher=publisher, gate_type=cam.gate_type)
+    track_event_emitter = TrackEventEmitter(publisher=publisher, gate_type=cam.gate_type)
     builder = UniqueFaceRepresentationBuilder()
 
     track_state = {}
@@ -135,7 +135,7 @@ def _camera_loop(cam: CameraConfig) -> None:
             boxes = results[0].boxes.xyxy.cpu().numpy()
             ids = results[0].boxes.id.int().cpu().numpy()
 
-            lost = track_manager.cleanup_lost_tracks(cam.code, ids.tolist())
+            lost = track_event_emitter.cleanup_lost_tracks(cam.code, ids.tolist())
 
             for tid in lost:
                 track_state.pop(tid, None)
@@ -259,7 +259,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         track_identity[person_id] = match["employee_id"]
                         track_state[person_id] = TrackState.MATCHED_KNOWN
 
-                        track_manager.recognition_confirmed(
+                        track_event_emitter.recognition_confirmed(
                             cam.code,
                             person_id,
                             match["employee_id"],
@@ -322,13 +322,14 @@ def _camera_loop(cam: CameraConfig) -> None:
                             builder=builder
                         )
                         unknown_id = unknown_embedding_store.add_unknown(payload)
+                        print(f"[UNKNOWN CREATED] {unknown_id} for person_id={person_id} at camera {cam.code}")
 
                     track_unknown_identity[person_id] = unknown_id
                     track_state[person_id] = TrackState.UPDATING_UNKNOWN
                     track_unknown_meta[person_id] = {"pose_best": {}, "last_update": 0}
 
                     log(cam, person_id, "STATE", "→ UPDATING_UNKNOWN")
-                    track_manager.unknown_confirmed(cam.code, person_id, unknown_id)
+                    track_event_emitter.unknown_confirmed(cam.code, person_id, unknown_id)
                     continue
 
                 # =====================================================

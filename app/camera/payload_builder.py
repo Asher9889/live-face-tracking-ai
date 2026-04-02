@@ -16,10 +16,10 @@ def _encode_image(img):
         img = cv2.resize(img, (target_w, int(h * scale)))
 
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
-    ok, buf = cv2.imencode(".jpg", img, encode_param)
+    _, buf = cv2.imencode(".jpg", img, encode_param)
 
-    if not ok:
-        return None
+    # if not ok:
+    #     return None
 
     return buf.tobytes()
 
@@ -28,39 +28,32 @@ def _build_pose_data(buffer):
     pose_map = {}
 
     for item in buffer:
+        print(item.keys())
         pose = item["pose_bucket"]
         img = item["img"]
 
         if img is None or img.size == 0:
+            print(f"[WARN] Missing image for pose={pose}")
             continue
 
         h, w = img.shape[:2]
 
-        # encode image
         image_bytes = _encode_image(img)
-        if not image_bytes:
-            continue
 
-        # keep BEST per pose
+        # ❗ DO NOT SKIP if encoding fails
+        # allow pose without image
         if pose not in pose_map or item["quality"] > pose_map[pose]["quality"]:
             pose_map[pose] = {
                 "embedding": item["embedding"].tolist(),
                 "quality": float(item["quality"]),
                 "face_size": {"w": int(w), "h": int(h)},
-                "image_bytes": image_bytes,
+                "image_bytes": image_bytes,  # can be None
                 "ts": int(item["ts"] * 1000)
             }
-
     return pose_map
 
-def build_unknown_payload(
-    buffer,
-    centroid,
-    cam_code,
-    unknown_id=None,
-    builder=None,
-    update_context=None
-):
+
+def build_unknown_payload(buffer, centroid, cam_code, unknown_id=None, builder=None, update_context=None):
     """
     Build payload for both CREATE and UPDATE.
     """

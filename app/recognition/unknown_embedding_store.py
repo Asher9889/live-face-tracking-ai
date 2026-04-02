@@ -350,53 +350,202 @@ class UnknownEmbeddingStore:
     # ---------------------------------------------------
     # Create new unknown
     # ---------------------------------------------------
-    def add_unknown(self, centroid, image_bytes, timestamp, camera_code, embedding_count, poses):
+    # def add_unknown(self, payload):
 
-        centroid = self._safe_normalize(centroid)
-        if centroid is None:
+    #     try:
+    #         centroid = np.array(payload["centroid_embedding"], dtype=np.float32)
+    #         centroid = self._safe_normalize(centroid)
+
+    #         if centroid is None:
+    #             return None
+
+    #         # Duplicate protection
+    #         dup = self._check_recent_duplicate(centroid)
+    #         if dup:
+    #             return dup
+
+    #         files = {}
+
+    #         # send pose images
+    #         poses = payload.get("poses", {})
+    #         for pose_name, pose_data in poses.items():
+    #             img_bytes = pose_data.get("image_bytes")
+    #             if img_bytes:
+    #                 files[f"face_{pose_name}"] = (
+    #                     f"{pose_name}.jpg",
+    #                     img_bytes,
+    #                     "image/jpeg"
+    #                 )
+
+    #         # Remove image_bytes from payload
+    #         clean_poses = {}
+
+    #         for pose_name, pose_data in poses.items():
+    #             pose_copy = dict(pose_data)
+    #             pose_copy.pop("image_bytes", None)
+    #             clean_poses[pose_name] = pose_copy
+
+    #         data = {
+    #             "payload": json.dumps({
+    #                 "unknown_id": payload.get("unknown_id"),
+    #                 "camera_code": payload.get("camera_code"),
+    #                 "timestamp": payload.get("timestamp"),
+    #                 "centroid_embedding": payload.get("centroid_embedding"),
+    #                 "embedding_count": payload.get("embedding_count"),
+    #                 "poses": clean_poses,
+    #                 "builder_stats": payload.get("builder_stats", {})
+    #             })
+    #         }
+
+    #         print("==== FULL PAYLOAD ====")
+    #         print(json.dumps(payload, indent=2, default=str))
+
+    #         response = self._post(
+    #             # envConfig.NODE_CREATE_UNKNOWN_URL,
+    #             "https://webhook.site/a83e91fd-1397-453a-abf8-86d0c3b3e3b6",
+    #             files,
+    #             data
+    #         )
+
+    #         if not response:
+    #             return None
+
+    #         res = response.json()
+
+    #         if not res.get("success"):
+    #             print("[AI] Node API error:", res)
+    #             return None
+
+    #         unknown_id = res["data"]["unknownId"]
+
+    #         # -------------------------
+    #         # Update local state
+    #         # -------------------------
+    #         idx = len(self.unknown_ids)
+
+    #         self.unknown_ids.append(unknown_id)
+    #         self.id_to_index[unknown_id] = idx
+
+    #         self.embeddings = np.vstack([self.embeddings, centroid])
+    #         self.counts.append(1)
+
+    #         self.recent_cache[unknown_id] = time.time()
+
+    #         return unknown_id
+
+    #     except Exception as e:
+    #         print("[AI] add_unknown failed:", e)
+    #         return None
+    
+    def add_unknown(self, payload):
+        try:
+            # -------------------------
+            # Normalize centroid
+            # -------------------------
+            centroid = np.array(payload["centroid_embedding"], dtype=np.float32)
+            # centroid = self._safe_normalize(centroid)
+
+            if centroid is None:
+                return None
+
+            # -------------------------
+            # Duplicate protection
+            # -------------------------
+            dup = self._check_recent_duplicate(centroid)
+            if dup:
+                return dup
+
+            # -------------------------
+            # Extract poses
+            # -------------------------
+            poses = payload.get("poses")
+            if not poses:
+                print("[AI] No poses found in payload")
+                return {
+                    "error": "No poses in payload"
+                }
+
+            # -------------------------
+            # Build clean poses (NO image_bytes)
+            # -------------------------
+            clean_poses = {}
+            for pose_name, pose_data in poses.items():
+                pose_copy = dict(pose_data)
+                pose_copy.pop("image_bytes", None)  # remove binary
+                clean_poses[pose_name] = pose_copy
+
+            # -------------------------
+            # Build JSON payload
+            # -------------------------
+            data = {
+                "unknown_id": payload.get("unknown_id"),
+                "camera_code": payload.get("camera_code"),
+                "timestamp": str(payload.get("timestamp")),
+                "centroid_embedding": json.dumps(centroid.tolist()),
+                "embedding_count": str(payload.get("embedding_count")),
+                "poses": json.dumps(clean_poses),
+                "builder_stats": json.dumps(payload.get("builder_stats", {}))
+            }
+
+            # -------------------------
+            # Build multipart request
+            # -------------------------
+            multipart_files = {}
+
+            # ✅ Image parts
+            for pose_name, pose_data in poses.items():
+                img_bytes = pose_data.get("image_bytes")
+                if img_bytes:
+                    multipart_files[f"face_{pose_name}"] = (
+                        f"{pose_name}.jpg",
+                        img_bytes,
+                        "image/jpeg"
+                    )
+
+            response = requests.post(
+                # "https://webhook.site/a83e91fd-1397-453a-abf8-86d0c3b3e3b6",
+                envConfig.NODE_CREATE_UNKNOWN_URL,
+                files=multipart_files,
+                data=data
+            )
+
+            if not response:
+                return None
+
+            # -------------------------
+            # Safe response parsing
+            # -------------------------
+            try:
+                res = response.json()
+            except Exception:
+                print("[DEBUG] Non-JSON response:", response.text)
+                return "debug_unknown_id"  # for webhook testing
+
+            if not res.get("success"):
+                print("[AI] Node API error:", res)
+                return None
+
+            unknown_id = res["data"]["unknownId"]
+
+            # -------------------------
+            # Update local cache
+            # -------------------------
+            idx = len(self.unknown_ids)
+
+            self.unknown_ids.append(unknown_id)
+            self.id_to_index[unknown_id] = idx
+
+            self.embeddings = np.vstack([self.embeddings, centroid])
+            self.counts.append(1)
+
+            self.recent_cache[unknown_id] = time.time()
+
+            return unknown_id
+
+        except Exception as e:
+            print("[AI] add_unknown failed:", e)
             return None
-
-        # check duplicate before API call
-        dup = self._check_recent_duplicate(centroid)
-        if dup:
-            return dup
-
-        files = {
-            "face": ("face.jpg", image_bytes, "image/jpeg")
-        }
-
-        data = {
-            "representativeEmbedding": json.dumps(centroid.tolist()),
-            "timestamp": str(timestamp),
-            "cameraCode": camera_code,
-            "embeddingCount": embedding_count,
-            "poses": json.dumps(list(poses))
-        }
-
-        response = self._post(envConfig.NODE_CREATE_UNKNOWN_URL, files, data)
-
-        if not response:
-            return None
-
-        data = response.json()
-        if not data.get("success"):
-            print("[AI] Node API error:", data)
-            return None
-
-        unknown_id = data["data"]["unknownId"]
-
-        # update local state
-        idx = len(self.unknown_ids)
-        self.unknown_ids.append(unknown_id)
-        self.id_to_index[unknown_id] = idx
-
-        self.embeddings = np.vstack([self.embeddings, centroid])
-        self.counts.append(1)
-
-        self.recent_cache[unknown_id] = time.time()
-
-        return unknown_id
-
+    
     # ---------------------------------------------------
     # Update existing unknown
     # ---------------------------------------------------
@@ -435,7 +584,12 @@ class UnknownEmbeddingStore:
             "poses": json.dumps(list(poses))
         }
 
-        self._post(envConfig.NODE_UPDATE_UNKNOWN_URL, files, data)
+        self._post(
+            # envConfig.NODE_UPDATE_UNKNOWN_URL, 
+            "https://webhook.site/a83e91fd-1397-453a-abf8-86d0c3b3e3b6",
+            files, 
+            data
+        )
 
         self.recent_cache[unknown_id] = time.time()
 
