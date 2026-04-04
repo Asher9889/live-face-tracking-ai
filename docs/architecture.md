@@ -135,5 +135,34 @@ track_identity            # known identities
 track_unknown_identity    # unknown identities
 track_unknown_buffer      # unknown temp storage
 track_embedding_state     # stability tracking
+```
 
+# Load Unknown Embeddings DS:
+```javascript
+StoreData(
+    centroid_matrix = np.array([
+        A_c,
+        B_c
+    ], dtype=np.float32),
 
+    pose_matrix = np.array([
+        A_f,
+        A_l,
+        B_f,
+        B_r
+    ], dtype=np.float32),
+
+    pose_owner = [
+        "A",
+        "A",
+        "B",
+        "B"
+    ],
+
+    unknown_ids = [
+        "A",
+        "B"
+    ]
+)
+
+```

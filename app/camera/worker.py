@@ -185,7 +185,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     x1, y1, x2, y2 = map(int, f["bbox"])
-                    face_img = frame[y1:y2, x1:x2]
+                    # face_img = frame[y1:y2, x1:x2]
+                    face_img = crop_with_margin(frame, x1, y1, x2, y2, margin=0.2)
 
                     if face_img.size == 0:
                         continue
@@ -333,7 +334,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     continue
 
                 # =====================================================
-                # 🔵 STAGE 3: UPDATE
+                # 🔵 STAGE 3: UPDATE (FINAL OPTIMIZED)
                 # =====================================================
                 elif state == TrackState.UPDATING_UNKNOWN:
 
@@ -349,43 +350,148 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     centroid = builder.build(buffer)
-                    best = builder.get_best_face(buffer)
 
-                    if not best or best["img"] is None or best["img"].size == 0:
-                        continue
+                    meta = track_unknown_meta.get(person_id, {
+                        "pose_best": {},
+                        "last_update": 0,
+                        "last_attempted": {}
+                    })
 
-                    meta = track_unknown_meta.get(person_id, {"pose_best": {}, "last_update": 0})
                     pose_best = meta["pose_best"]
+                    last_attempted = meta.get("last_attempted", {})
 
                     # cooldown
                     if time.time() - meta["last_update"] < 2:
                         continue
 
-                    best_quality = best["quality"]
-                    prev_q = pose_best.get(pose, 0)
+                    # =====================================================
+                    # 🔥 STEP 1: Build best candidate per pose
+                    # =====================================================
+                    pose_candidates = {}
 
-                    if best_quality <= prev_q + 0.02 and pose in pose_best:
+                    for x in buffer:
+                        p = x["pose_bucket"]
+                        q = x["quality"]
+
+                        if p not in pose_candidates or q > pose_candidates[p]["quality"]:
+                            pose_candidates[p] = x
+
+                    # =====================================================
+                    # 🔥 STEP 2: Filter poses (STRICT LOGIC)
+                    # =====================================================
+                    poses_to_send = {}
+
+                    MIN_IMPROVEMENT = 0.08   # 🔥 increased
+                    MIN_SEND_QUALITY = 0.60
+
+                    for p, data in pose_candidates.items():
+
+                        best_quality = data["quality"]
+
+                        local_q = pose_best.get(p, 0)
+                        global_q = unknown_embedding_store.get_pose_quality(unknown_id, p)
+
+                        effective_q = max(local_q, global_q)
+                        last_q = last_attempted.get(p, 0)
+
+                        # -----------------------------
+                        # 🔴 HARD SKIP: worse or same
+                        # -----------------------------
+                        if best_quality <= effective_q:
+                            continue
+
+                        # -----------------------------
+                        # 🔴 SKIP: micro improvement
+                        # -----------------------------
+                        if best_quality <= effective_q + MIN_IMPROVEMENT:
+                            continue
+
+                        # -----------------------------
+                        # 🔴 SKIP: retry suppression
+                        # -----------------------------
+                        if best_quality <= last_q + 0.01:
+                            continue
+
+                        # -----------------------------
+                        # 🔴 SKIP: low quality
+                        # -----------------------------
+                        if best_quality < MIN_SEND_QUALITY:
+                            continue
+
+                        poses_to_send[p] = data
+
+                        # 🔥 mark attempted (important)
+                        last_attempted[p] = best_quality
+
+                    # =====================================================
+                    # 🔥 STEP 3: Nothing to send → skip
+                    # =====================================================
+                    if not poses_to_send:
                         continue
 
-                    ok, buf = cv2.imencode(".jpg", best["img"])
-                    if not ok:
+                    # =====================================================
+                    # 🔥 STEP 4: Build payload
+                    # =====================================================
+                    pose_payload = {}
+
+                    for p, data in poses_to_send.items():
+
+                        img = data["img"]
+
+
+
+                        if img is None or img.size == 0:
+                            continue
+
+                        h, w = img.shape[:2]
+                        ok, buf = cv2.imencode(".jpg", img)
+
+                        if not ok:
+                            continue
+
+                        pose_payload[p] = {
+                            "embedding": data["embedding"].tolist(),
+                            "quality": data["quality"],
+                             "faceSize": {
+                                "w": w,
+                                "h": h
+                            },
+                            "image": buf.tobytes(),   # 🔥 per-pose image
+                            "ts": int(time.time() * 1000)
+                        }
+
+                    # nothing valid
+                    if not pose_payload:
                         continue
 
-                    pose_best[pose] = best_quality
-
+                    # =====================================================
+                    # 🔥 STEP 5: API CALL
+                    # =====================================================
                     unknown_embedding_store.update_unknown(
                         unknown_id,
                         centroid,
                         int(time.time() * 1000),
                         cam.code,
-                        buf.tobytes(),
-                        {x["pose_bucket"] for x in buffer},
-                        best_quality
+                        pose_payload
                     )
+
+                    # =====================================================
+                    # 🔥 STEP 6: UPDATE CACHE
+                    # =====================================================
+                    for p, data in poses_to_send.items():
+                        pose_best[p] = data["quality"]
+
+                        unknown_embedding_store.update_pose_quality_cache(
+                            unknown_id,
+                            p,
+                            data["quality"]
+                        )
 
                     track_unknown_meta[person_id] = {
                         "pose_best": pose_best,
-                        "last_update": time.time()
+                        "last_update": time.time(),
+                        "last_attempted": last_attempted
                     }
 
-                    log(cam, person_id, "UPDATE", f"UPDATED → {unknown_id}")
+                    log(cam, person_id, "UPDATE",
+                        f"UPDATED → {unknown_id}, poses={list(poses_to_send.keys())}")

@@ -171,18 +171,29 @@ def select_best_face(faces_with_quality):
 def crop_with_margin(frame, x1, y1, x2, y2, margin=0.2):
     h, w = frame.shape[:2]
 
+    # 🔥 Validate bbox
+    if x2 <= x1 or y2 <= y1:
+        return None
+
     bw = x2 - x1
     bh = y2 - y1
 
-    mx = int(bw * margin)
-    my = int(bh * margin)
+    # 🔥 symmetric margin (total = margin, not 2x)
+    mx = int(bw * margin / 2)
+    my = int(bh * margin / 2)
 
     nx1 = max(0, x1 - mx)
     ny1 = max(0, y1 - my)
     nx2 = min(w, x2 + mx)
     ny2 = min(h, y2 + my)
 
-    return frame[ny1:ny2, nx1:nx2]
+    cropped = frame[ny1:ny2, nx1:nx2]
+
+    # 🔥 safety check
+    if cropped is None or cropped.size == 0:
+        return None
+
+    return cropped
 
 def get_pose_name(yaw: float | None) -> str | None:
     if yaw is None:
