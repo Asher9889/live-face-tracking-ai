@@ -156,9 +156,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                 if person_id not in track_state:
                     track_state[person_id] = TrackState.COLLECTING_KNOWN
                     log(cam, person_id, "STATE", "INIT → COLLECTING_KNOWN")
-                else:
-                    # 🔥 IMPORTANT DEBUG
-                    log(cam, person_id, "DEBUG", f"EXISTING STATE → {track_state[person_id]}")
+                # else:
+                #     # 🔥 IMPORTANT DEBUG
+                #     log(cam, person_id, "DEBUG", f"EXISTING STATE → {track_state[person_id]}")
 
                 state = track_state[person_id]
 

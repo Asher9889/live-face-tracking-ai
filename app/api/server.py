@@ -99,6 +99,8 @@ async def register_face(files: List[UploadFile] = File(...)):
     # normalize mean embedding (important for cosine similarity)
     mean_embedding = mean_embedding / np.linalg.norm(mean_embedding)
 
+    print(f"[API] Registered {len(raw_embeddings)} faces, mean embedding norm={np.linalg.norm(mean_embedding):.3f}")
+
     return {
         "success": True,
         "faces_processed": len(raw_embeddings),

@@ -664,7 +664,7 @@ class UnknownEmbeddingStore:
                 "cameraCode": camera_code,
                 "poses": json.dumps(poses_payload)  # 🔥 IMPORTANT
             }
-            print(f"[DEBUG] Data payload: {data}")
+            # print(f"[DEBUG] Data payload: {data}")
             requests.patch(
                 envConfig.NODE_UPDATE_UNKNOWN_URL,
                 # "https://webhook.site/a83e91fd-1397-453a-abf8-86d0c3b3e3b6",
