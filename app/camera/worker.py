@@ -329,7 +329,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_state[person_id] = TrackState.UPDATING_UNKNOWN
                     track_unknown_meta[person_id] = {"pose_best": {}, "last_update": 0}
 
-                    log(cam, person_id, "STATE", "→ UPDATING_UNKNOWN")
+                    # log(cam, person_id, "STATE", "→ UPDATING_UNKNOWN")
                     track_event_emitter.unknown_confirmed(cam.code, person_id, unknown_id)
                     continue
 
@@ -382,7 +382,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     poses_to_send = {}
 
                     MIN_IMPROVEMENT = 0.08   # 🔥 increased
-                    MIN_SEND_QUALITY = 0.60
+                    # MIN_SEND_QUALITY = 0.60
 
                     for p, data in pose_candidates.items():
 
@@ -409,14 +409,14 @@ def _camera_loop(cam: CameraConfig) -> None:
                         # -----------------------------
                         # 🔴 SKIP: retry suppression
                         # -----------------------------
-                        if best_quality <= last_q + 0.01:
+                        if best_quality <= last_q + 0.04:
                             continue
 
                         # -----------------------------
                         # 🔴 SKIP: low quality
                         # -----------------------------
-                        if best_quality < MIN_SEND_QUALITY:
-                            continue
+                        # if best_quality < MIN_SEND_QUALITY:
+                        #     continue
 
                         poses_to_send[p] = data
 
