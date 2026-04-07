@@ -429,6 +429,105 @@ class UnknownEmbeddingStore:
             return None
         return emb / norm
 
+    def _prepare_create_request(self, payload):
+        """Build multipart request parts from canonical payload."""
+        centroid = np.array(payload["centroid_embedding"], dtype=np.float32)
+        centroid = self._normalize(centroid)
+        if centroid is None:
+            return None, None, None, None
+
+        poses = payload.get("poses") or {}
+        if not poses:
+            return None, None, None, None
+
+        clean_poses = {}
+        files = {}
+
+        for pose_name, pose_data in poses.items():
+            pose_copy = dict(pose_data)
+            img_bytes = pose_copy.pop("image_bytes", None)
+            if img_bytes:
+                files[f"face_{pose_name}"] = (
+                    f"{pose_name}.jpg",
+                    img_bytes,
+                    "image/jpeg"
+                )
+            clean_poses[pose_name] = pose_copy
+
+        data = {
+            "unknown_id": "" if payload.get("unknown_id") is None else str(payload.get("unknown_id")),
+            "camera_code": str(payload.get("camera_code", "")),
+            "timestamp": str(payload.get("timestamp", "")),
+            "centroid_embedding": json.dumps(centroid.tolist()),
+            "embedding_count": str(payload.get("embedding_count", 0)),
+            "poses": json.dumps(clean_poses),
+            "builder_stats": json.dumps(payload.get("builder_stats", {}))
+        }
+
+        best_image = payload.get("best_image")
+        if best_image:
+            files["best_image"] = ("best.jpg", best_image, "image/jpeg")
+
+        return centroid, clean_poses, data, files
+
+    def _commit_created_unknown(self, unknown_id, centroid, clean_poses):
+        """Commit newly created unknown to the in-memory snapshot atomically."""
+        store = self._store
+
+        if unknown_id in store.unknown_ids:
+            return
+
+        centroid_matrix = store.centroid_matrix
+        if centroid_matrix.shape[0] == 0:
+            new_centroid_matrix = centroid.reshape(1, -1)
+        else:
+            new_centroid_matrix = np.vstack([centroid_matrix, centroid])
+
+        new_unknown_ids = list(store.unknown_ids)
+        new_unknown_ids.append(unknown_id)
+
+        new_pose_owner = list(store.pose_owner)
+        new_uid_to_pose_quality = {
+            uid: dict(qualities) for uid, qualities in store.uid_to_pose_quality.items()
+        }
+        new_uid_to_pose_indices = {
+            uid: list(indices) for uid, indices in store.uid_to_pose_indices.items()
+        }
+
+        new_uid_to_pose_quality.setdefault(unknown_id, {})
+        new_uid_to_pose_indices.setdefault(unknown_id, [])
+
+        pose_vectors = []
+        base_idx = int(store.pose_matrix.shape[0])
+
+        for pose_name, pose_data in clean_poses.items():
+            emb_data = pose_data.get("embedding")
+            if emb_data is None:
+                continue
+
+            pose_emb = self._normalize(np.array(emb_data, dtype=np.float32))
+            if pose_emb is None:
+                continue
+
+            pose_vectors.append(pose_emb)
+            new_pose_owner.append(unknown_id)
+            new_uid_to_pose_indices[unknown_id].append(base_idx + len(pose_vectors) - 1)
+            new_uid_to_pose_quality[unknown_id][pose_name] = float(pose_data.get("quality", 0))
+
+        if pose_vectors:
+            new_pose_matrix = np.vstack([store.pose_matrix, np.stack(pose_vectors)])
+        else:
+            new_pose_matrix = store.pose_matrix
+
+        self._store = StoreData(
+            centroid_matrix=new_centroid_matrix,
+            pose_matrix=new_pose_matrix,
+            pose_owner=new_pose_owner,
+            unknown_ids=new_unknown_ids,
+            uid_to_pose_quality=new_uid_to_pose_quality,
+            uid_to_pose_indices=new_uid_to_pose_indices
+        )
+
     # -----------------------------
     # BUILD STORE
     # -----------------------------
@@ -447,6 +546,8 @@ class UnknownEmbeddingStore:
         for u in data:
             uid = u["id"]
             unknown_ids.append(uid)
+            uid_to_pose_quality[uid] = {}
+            uid_to_pose_indices[uid] = []
 
             # centroid
             c = self._normalize(
@@ -603,22 +704,38 @@ class UnknownEmbeddingStore:
         return None
 
     # -----------------------------
-    # CREATE (NO LOCAL STATE MUTATION)
-    # -----------------------------
+    # Add unknown (NEW ENTRY)
+    # -----------------------------  
     def add_unknown(self, payload):
+
         try:
+            centroid, clean_poses, data, multipart_files = self._prepare_create_request(payload)
+            if centroid is None:
+                print("[AI] Invalid payload for add_unknown")
+                return None
+
             response = requests.post(
                 envConfig.NODE_CREATE_UNKNOWN_URL,
-                files=payload.get("files", {}),
-                data=payload.get("data", {})
+                files=multipart_files,
+                data=data,
+                headers={"Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"},
+                timeout=5
             )
+            response.raise_for_status()
 
             res = response.json()
+            print(f"[AI] add_unknown response: {res}")
 
             if not res.get("success"):
                 return None
 
-            return res["data"]["unknownId"]
+            unknown_id = (res.get("data") or {}).get("unknownId")
+            if not unknown_id:
+                return None
+
+            # Commit to local store only after Node confirms success.
+            self._commit_created_unknown(unknown_id, centroid, clean_poses)
+            return unknown_id
 
         except Exception as e:
             print("[AI] add_unknown failed:", e)
@@ -657,26 +774,37 @@ class UnknownEmbeddingStore:
 
             print(f"[DEBUG] Files: {list(files.keys())}")
 
+            centroid_arr = np.array(centroid, dtype=np.float32)
+            centroid_arr = self._normalize(centroid_arr)
+            if centroid_arr is None:
+                return None
+
             data = {
-                "unknownId": unknown_id,
-                "meanEmbedding": centroid,  # optional
+                "unknownId": str(unknown_id),
+                "meanEmbedding": json.dumps(centroid_arr.tolist()),
                 "timestamp": str(timestamp),
-                "cameraCode": camera_code,
+                "cameraCode": str(camera_code),
                 "poses": json.dumps(poses_payload)  # 🔥 IMPORTANT
             }
             # print(f"[DEBUG] Data payload: {data}")
-            requests.patch(
+            response = requests.patch(
                 envConfig.NODE_UPDATE_UNKNOWN_URL,
-                # "https://webhook.site/a83e91fd-1397-453a-abf8-86d0c3b3e3b6",
                 files=files,
-                data=data
+                data=data,
+                headers={"Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"},
+                timeout=5
             )
+
+            if response.status_code >= 400:
+                print(f"[AI] update_unknown HTTP error: {response.status_code} {response.text}")
+                return None
 
             return unknown_id
 
         except Exception as e:
             print("[AI] update_unknown failed:", e)
             return None
+
 
     # -----------------------------
     # STATS

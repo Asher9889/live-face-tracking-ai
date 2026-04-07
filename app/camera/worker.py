@@ -211,7 +211,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 quality = best["quality"]
 
                 x1, y1, x2, y2 = map(int, best["bbox"])
-                face_img = frame[y1:y2, x1:x2]
+                face_img = crop_with_margin(frame, x1, y1, x2, y2, margin=0.2)
 
                 if face_img.size == 0:
                     continue
@@ -323,6 +323,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                             builder=builder
                         )
                         unknown_id = unknown_embedding_store.add_unknown(payload)
+
+                        if not unknown_id:
+                            log(cam, person_id, "UNKNOWN", "CREATE FAILED → STAY COLLECTING_UNKNOWN")
+                            continue
+                        
                         print(f"[UNKNOWN CREATED] {unknown_id} for person_id={person_id} at camera {cam.code}")
 
                     track_unknown_identity[person_id] = unknown_id
