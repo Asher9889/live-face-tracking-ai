@@ -385,7 +385,16 @@ from app.config.config import envConfig
 # SNAPSHOT DATA (IMMUTABLE)
 # =============================
 class StoreData:
-    def __init__(self, centroid_matrix, pose_matrix, pose_owner, unknown_ids, uid_to_pose_quality, uid_to_pose_indices):
+    def __init__(
+        self,
+        centroid_matrix,
+        pose_matrix,
+        pose_owner,
+        unknown_ids,
+        uid_to_pose_quality,
+        uid_to_pose_indices,
+        uid_to_pose_name_index,
+    ):
         self.centroid_matrix = centroid_matrix
         self.pose_matrix = pose_matrix
         self.pose_owner = pose_owner
@@ -393,6 +402,7 @@ class StoreData:
         #  for stats and smart update
         self.uid_to_pose_quality = uid_to_pose_quality
         self.uid_to_pose_indices = uid_to_pose_indices
+        self.uid_to_pose_name_index = uid_to_pose_name_index
         
     
 
@@ -411,7 +421,8 @@ class UnknownEmbeddingStore:
             pose_owner=[],
             unknown_ids=[],
             uid_to_pose_quality={},
-            uid_to_pose_indices={}
+            uid_to_pose_indices={},
+            uid_to_pose_name_index={},
         )
 
         # thresholds
@@ -464,10 +475,6 @@ class UnknownEmbeddingStore:
             "builder_stats": json.dumps(payload.get("builder_stats", {}))
         }
 
-        best_image = payload.get("best_image")
-        if best_image:
-            files["best_image"] = ("best.jpg", best_image, "image/jpeg")
-
         return centroid, clean_poses, data, files
 
     def _commit_created_unknown(self, unknown_id, centroid, clean_poses):
@@ -493,9 +500,13 @@ class UnknownEmbeddingStore:
         new_uid_to_pose_indices = {
             uid: list(indices) for uid, indices in store.uid_to_pose_indices.items()
         }
+        new_uid_to_pose_name_index = {
+            uid: dict(name_map) for uid, name_map in store.uid_to_pose_name_index.items()
+        }
 
         new_uid_to_pose_quality.setdefault(unknown_id, {})
         new_uid_to_pose_indices.setdefault(unknown_id, [])
+        new_uid_to_pose_name_index.setdefault(unknown_id, {})
 
         pose_vectors = []
         base_idx = int(store.pose_matrix.shape[0])
@@ -511,7 +522,9 @@ class UnknownEmbeddingStore:
 
             pose_vectors.append(pose_emb)
             new_pose_owner.append(unknown_id)
-            new_uid_to_pose_indices[unknown_id].append(base_idx + len(pose_vectors) - 1)
+            new_idx = base_idx + len(pose_vectors) - 1
+            new_uid_to_pose_indices[unknown_id].append(new_idx)
+            new_uid_to_pose_name_index[unknown_id][pose_name] = new_idx
             new_uid_to_pose_quality[unknown_id][pose_name] = float(pose_data.get("quality", 0))
 
         if pose_vectors:
@@ -525,7 +538,123 @@ class UnknownEmbeddingStore:
             pose_owner=new_pose_owner,
             unknown_ids=new_unknown_ids,
             uid_to_pose_quality=new_uid_to_pose_quality,
-            uid_to_pose_indices=new_uid_to_pose_indices
+            uid_to_pose_indices=new_uid_to_pose_indices,
+            uid_to_pose_name_index=new_uid_to_pose_name_index,
+        )
+
+    def _prepare_update_request(self, unknown_id, centroid, timestamp, camera_code, poses):
+        """Build canonical multipart request for update_unknown."""
+        if not unknown_id:
+            return None, None, None, None
+
+        centroid_arr = self._normalize(np.array(centroid, dtype=np.float32))
+        if centroid_arr is None:
+            return None, None, None, None
+
+        if not poses:
+            return None, None, None, None
+
+        files = {}
+        clean_poses = {}
+
+        for pose_name, pose_data in poses.items():
+            image_bytes = pose_data.get("image")
+            if image_bytes:
+                files[f"face_{pose_name}"] = (
+                    f"{pose_name}.jpg",
+                    image_bytes,
+                    "image/jpeg"
+                )
+
+            emb_val = pose_data.get("embedding")
+            if hasattr(emb_val, "tolist"):
+                emb_val = emb_val.tolist()
+
+            clean_poses[pose_name] = {
+                "embedding": emb_val,
+                "quality": float(pose_data.get("quality", 0)),
+                "faceSize": pose_data.get("faceSize", {}),
+                "ts": int(pose_data.get("ts", 0)),
+            }
+
+        data = {
+            "unknownId": str(unknown_id),
+            "meanEmbedding": json.dumps(centroid_arr.tolist()),
+            "timestamp": str(timestamp),
+            "cameraCode": str(camera_code),
+            "poses": json.dumps(clean_poses),
+        }
+
+        return centroid_arr, clean_poses, data, files
+
+    def _commit_updated_unknown(self, unknown_id, centroid, clean_poses):
+        """Commit successful update_unknown response to local snapshot atomically."""
+        store = self._store
+
+        if unknown_id not in store.unknown_ids:
+            return
+
+        uid_idx = store.unknown_ids.index(unknown_id)
+
+        new_centroid_matrix = np.array(store.centroid_matrix, copy=True)
+        new_centroid_matrix[uid_idx] = centroid
+
+        new_pose_matrix = np.array(store.pose_matrix, copy=True)
+        new_pose_owner = list(store.pose_owner)
+        new_uid_to_pose_quality = {
+            uid: dict(qualities) for uid, qualities in store.uid_to_pose_quality.items()
+        }
+        new_uid_to_pose_indices = {
+            uid: list(indices) for uid, indices in store.uid_to_pose_indices.items()
+        }
+        new_uid_to_pose_name_index = {
+            uid: dict(name_map) for uid, name_map in store.uid_to_pose_name_index.items()
+        }
+
+        new_uid_to_pose_quality.setdefault(unknown_id, {})
+        new_uid_to_pose_indices.setdefault(unknown_id, [])
+        new_uid_to_pose_name_index.setdefault(unknown_id, {})
+
+        for pose_name, pose_data in clean_poses.items():
+            emb_data = pose_data.get("embedding")
+            if emb_data is None:
+                continue
+
+            pose_emb = self._normalize(np.array(emb_data, dtype=np.float32))
+            if pose_emb is None:
+                continue
+
+            new_quality = float(pose_data.get("quality", 0))
+            old_quality = float(new_uid_to_pose_quality[unknown_id].get(pose_name, 0))
+
+            # Apply update only if new quality is better than stored quality.
+            if new_quality <= old_quality:
+                continue
+
+            pose_idx = new_uid_to_pose_name_index[unknown_id].get(pose_name)
+            if pose_idx is not None:
+                new_pose_matrix[pose_idx] = pose_emb
+            else:
+                new_pose_owner.append(unknown_id)
+                if new_pose_matrix.shape[0] == 0:
+                    new_pose_matrix = pose_emb.reshape(1, -1)
+                    pose_idx = 0
+                else:
+                    pose_idx = int(new_pose_matrix.shape[0])
+                    new_pose_matrix = np.vstack([new_pose_matrix, pose_emb])
+                new_uid_to_pose_indices[unknown_id].append(pose_idx)
+                new_uid_to_pose_name_index[unknown_id][pose_name] = pose_idx
+
+            new_uid_to_pose_quality[unknown_id][pose_name] = new_quality
+
+        self._store = StoreData(
+            centroid_matrix=new_centroid_matrix,
+            pose_matrix=new_pose_matrix,
+            pose_owner=new_pose_owner,
+            unknown_ids=list(store.unknown_ids),
+            uid_to_pose_quality=new_uid_to_pose_quality,
+            uid_to_pose_indices=new_uid_to_pose_indices,
+            uid_to_pose_name_index=new_uid_to_pose_name_index,
         )
 
     # -----------------------------
@@ -541,6 +670,7 @@ class UnknownEmbeddingStore:
         # 🔥 NEW
         uid_to_pose_quality = {}
         uid_to_pose_indices = {}
+        uid_to_pose_name_index = {}
 
         pose_idx = 0
         for u in data:
@@ -548,6 +678,7 @@ class UnknownEmbeddingStore:
             unknown_ids.append(uid)
             uid_to_pose_quality[uid] = {}
             uid_to_pose_indices[uid] = []
+            uid_to_pose_name_index[uid] = {}
 
             # centroid
             c = self._normalize(
@@ -569,6 +700,7 @@ class UnknownEmbeddingStore:
                 pose_owner.append(uid)
 
                 uid_to_pose_indices[uid].append(pose_idx)
+                uid_to_pose_name_index[uid][pose_name] = pose_idx
                 uid_to_pose_quality[uid][pose_name] = pose_data.get("quality", 0)
 
                 pose_idx += 1
@@ -580,7 +712,8 @@ class UnknownEmbeddingStore:
             pose_owner=pose_owner,
             unknown_ids=unknown_ids,
             uid_to_pose_quality=uid_to_pose_quality,
-            uid_to_pose_indices=uid_to_pose_indices
+            uid_to_pose_indices=uid_to_pose_indices,
+            uid_to_pose_name_index=uid_to_pose_name_index,
         )
 
 
@@ -747,46 +880,19 @@ class UnknownEmbeddingStore:
     def update_unknown(self, unknown_id, centroid, timestamp, camera_code, poses):
         print(f"[DEBUG] Updating unknown {unknown_id} at {timestamp}, poses: {list(poses.keys())}")
         try:
-            files = {}
-            poses_payload = {}
-
-            # -----------------------------------
-            # 🔥 build files + clean pose payload
-            # -----------------------------------
-            for pose_name, pose_data in poses.items():
-
-                image_bytes = pose_data.get("image")
-
-                if image_bytes:
-                    files[f"face_{pose_name}"] = (
-                        f"{pose_name}.jpg",
-                        image_bytes,
-                        "image/jpeg"
-                    )
-
-                # remove image from payload (important)
-                poses_payload[pose_name] = {
-                    "embedding": pose_data["embedding"],
-                    "quality": pose_data["quality"],
-                    "faceSize": pose_data["faceSize"],
-                    "ts": pose_data["ts"]
-                }
+            centroid_arr, clean_poses, data, files = self._prepare_update_request(
+                unknown_id,
+                centroid,
+                timestamp,
+                camera_code,
+                poses,
+            )
+            if centroid_arr is None:
+                print("[AI] Invalid payload for update_unknown")
+                return None
 
             print(f"[DEBUG] Files: {list(files.keys())}")
 
-            centroid_arr = np.array(centroid, dtype=np.float32)
-            centroid_arr = self._normalize(centroid_arr)
-            if centroid_arr is None:
-                return None
-
-            data = {
-                "unknownId": str(unknown_id),
-                "meanEmbedding": json.dumps(centroid_arr.tolist()),
-                "timestamp": str(timestamp),
-                "cameraCode": str(camera_code),
-                "poses": json.dumps(poses_payload)  # 🔥 IMPORTANT
-            }
-            # print(f"[DEBUG] Data payload: {data}")
             response = requests.patch(
                 envConfig.NODE_UPDATE_UNKNOWN_URL,
                 files=files,
@@ -794,10 +900,15 @@ class UnknownEmbeddingStore:
                 headers={"Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"},
                 timeout=5
             )
+            response.raise_for_status()
 
-            if response.status_code >= 400:
-                print(f"[AI] update_unknown HTTP error: {response.status_code} {response.text}")
+            res = response.json()
+            if not res.get("success"):
+                print(f"[AI] update_unknown API rejected: {res}")
                 return None
+
+            # Commit to local store only after Node confirms success.
+            self._commit_updated_unknown(unknown_id, centroid_arr, clean_poses)
 
             return unknown_id
 

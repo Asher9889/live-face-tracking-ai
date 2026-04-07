@@ -53,54 +53,7 @@ class FaceLandmarkerEngine:
     # -----------------------------
     # MAIN ENTRY
     # -----------------------------
-
-    # def analyze(self, face_img: np.ndarray, debug=True) -> Optional[Dict]:
-    #     if face_img is None or face_img.size == 0:
-    #         if debug:
-    #             print("[Landmarker] ❌ Empty face image")
-    #         return {
-    #             "valid": False,
-    #             "landmarks": None
-    #         }
-
-    #     h, w = face_img.shape[:2]
-
-    #     # Size check
-    #     if min(h, w) < self.min_face_size:
-    #         if debug:
-    #             print(f"[Landmarker] ❌ Rejected: small face ({w}x{h}) < {self.min_face_size}")
-    #         return {
-    #             "valid": False,
-    #             "landmarks": None
-    #         }
-
-    #     # Blur check
-    #     blur_score = cv2.Laplacian(cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()
-    #     if blur_score < self.blur_threshold:
-    #         if debug:
-    #             print(f"[Landmarker] ❌ Rejected: blurry (score={blur_score:.2f} < {self.blur_threshold})")
-    #         return {
-    #             "valid": False,
-    #             "landmarks": None
-    #         }
-
-    #     rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-    #     mp_image = self._to_mp_image(rgb)
-
-    #     result = self.landmarker.detect(mp_image)
-
-    #     # print(f"[Landmarker] Detection result: {result.face_landmarks}, Blendshapes: {result.face_blendshapes}, Matrix")
-
-    #     if not result.face_landmarks:
-    #         if debug:
-    #             print("[Landmarker] ❌ No landmarks detected (likely bad pose / occlusion)")
-    #         return None
-
-    #     return {
-    #         "blendshapes": result.face_blendshapes[0] if result.face_blendshapes else None,
-    #         "matrix": result.facial_transformation_matrixes[0] if result.facial_transformation_matrixes else None,
-    #     }
-    
+ 
     def analyze(self, face_img: np.ndarray, debug=False) -> Dict:
         """
         Extract FaceMesh signals WITHOUT hard rejection.

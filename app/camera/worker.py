@@ -150,6 +150,16 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                 person_id = int(person_id)
 
+                # Keep track lifecycle state updated so emit-once events are not dropped.
+                track_event_emitter.update_track(
+                    cam.code,
+                    person_id,
+                    bbox,
+                    int(time.time() * 1000),
+                    frame_w,
+                    frame_h
+                )
+
                 if person_id in track_identity:
                     continue
 
@@ -472,13 +482,17 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # =====================================================
                     # 🔥 STEP 5: API CALL
                     # =====================================================
-                    unknown_embedding_store.update_unknown(
+                    updated_id = unknown_embedding_store.update_unknown(
                         unknown_id,
                         centroid,
                         int(time.time() * 1000),
                         cam.code,
                         pose_payload
                     )
+
+                    if not updated_id:
+                        log(cam, person_id, "UPDATE", "UPDATE FAILED → KEEP COLLECTING")
+                        continue
 
                     # =====================================================
                     # 🔥 STEP 6: UPDATE CACHE

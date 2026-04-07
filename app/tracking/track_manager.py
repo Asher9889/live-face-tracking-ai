@@ -248,44 +248,30 @@ class TrackEventEmitter:
     def update_track(self, cam_code, person_id, bbox, frame_ts, frame_w, frame_h):
         now = time.time()
         person_id = int(person_id)
+        bbox_list = bbox.tolist()
 
         if person_id not in self.tracks:
             # NEW TRACK
             self.tracks[person_id] = {
                 "first_seen": now,
                 "last_seen": now,
-                "emitted_events": set()
+                "emitted_events": set(),
+                "bbox": bbox_list,
+                "frameTs": frame_ts,
+                "frame_width": frame_w,
+                "frame_height": frame_h
             }
-
-            self.publisher.publish(
-                "track_created",
-                {
-                    "camera_code": cam_code,
-                    "track_id": person_id,
-                    "bbox": bbox.tolist(),
-                    "frameTs": frame_ts,
-                    "frame_width": frame_w,
-                    "frame_height": frame_h,
-                    "eventTs": int(time.time() * 1000)
-                }
-            )
 
         else:
             # UPDATE TRACK
             self.tracks[person_id]["last_seen"] = now
 
-            self.publisher.publish(
-                "track_updated",
-                {
-                    "camera_code": cam_code,
-                    "track_id": person_id,
-                    "bbox": bbox.tolist(),
-                    "frameTs": frame_ts,
-                    "frame_width": frame_w,
-                    "frame_height": frame_h,
-                    "eventTs": int(time.time() * 1000)
-                }
-            )
+        # Keep latest frame metadata for event payload contract.
+        track = self.tracks[person_id]
+        track["bbox"] = bbox_list
+        track["frameTs"] = frame_ts
+        track["frame_width"] = frame_w
+        track["frame_height"] = frame_h
 
     # -----------------------------
     # FACE EVENT
@@ -321,16 +307,21 @@ class TrackEventEmitter:
 
     def recognition_confirmed(self, cam_code, person_id, identity_id, similarity):
         person_id = int(person_id)
+        track = self.tracks.get(person_id)
+        if not track:
+            return
 
         payload = {
             "camera_code": cam_code,
             "track_id": person_id,
             "person_id": identity_id,
             "similarity": similarity,
+            "bbox": track["bbox"],
+            "frameTs": track["frameTs"],
+            "frame_width": track["frame_width"],
+            "frame_height": track["frame_height"],
             "eventTs": int(time.time() * 1000)
         }
-
-        self._emit_once(person_id, "recognition_confirmed", payload)
 
         # Gate events (emit once as well)
         if self.gate_type == "ENTRY":
@@ -341,17 +332,26 @@ class TrackEventEmitter:
 
     def unknown_confirmed(self, cam_code, person_id, unknown_id):
         person_id = int(person_id)
+        track = self.tracks.get(person_id)
+        if not track:
+            return
 
-        self._emit_once(
-            person_id,
-            "unknown_confirmed",
-            {
-                "camera_code": cam_code,
-                "track_id": person_id,
-                "unknown_id": unknown_id,
-                "eventTs": int(time.time() * 1000)
-            }
-        )
+        payload = {
+            "camera_code": cam_code,
+            "track_id": person_id,
+            "person_id": unknown_id,
+            "bbox": track["bbox"],
+            "frameTs": track["frameTs"],
+            "frame_width": track["frame_width"],
+            "frame_height": track["frame_height"],
+            "eventTs": int(time.time() * 1000)
+        }
+
+        if self.gate_type == "ENTRY":
+            self._emit_once(person_id, "unknown_entered", payload)
+
+        elif self.gate_type == "EXIT":
+            self._emit_once(person_id, "unknown_exited", payload)
 
     # -----------------------------
     # TRACK CLEANUP
@@ -372,15 +372,6 @@ class TrackEventEmitter:
                 continue
 
             lost.append(tid)
-
-            self.publisher.publish(
-                "track_lost",
-                {
-                    "camera_code": cam_code,
-                    "track_id": tid,
-                    "eventTs": int(time.time() * 1000)
-                }
-            )
 
             del self.tracks[tid]
 
