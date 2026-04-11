@@ -193,7 +193,8 @@ def crop_with_margin(frame, x1, y1, x2, y2, margin=0.2):
     if cropped is None or cropped.size == 0:
         return None
 
-    return cropped
+    # Return a copy so buffered faces do not reference mutable frame memory.
+    return cropped.copy()
 
 def get_pose_name(yaw: float | None) -> str | None:
     if yaw is None:

@@ -6,6 +6,9 @@ def _encode_image(img):
     if img is None or img.size == 0:
         return None
 
+    # Ensure encoder sees a contiguous BGR image buffer.
+    img = img.copy()
+
     h, w = img.shape[:2]
 
     target_w = 160
@@ -16,10 +19,9 @@ def _encode_image(img):
         img = cv2.resize(img, (target_w, int(h * scale)))
 
     encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 75]
-    _, buf = cv2.imencode(".jpg", img, encode_param)
-
-    # if not ok:
-    #     return None
+    ok, buf = cv2.imencode(".jpg", img, encode_param)
+    if not ok or buf is None:
+        return None
 
     return buf.tobytes()
 
