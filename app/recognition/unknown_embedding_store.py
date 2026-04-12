@@ -374,11 +374,54 @@
 
 
 import json
+import hashlib
+import os
+import cv2
+from datetime import datetime
 
 import numpy as np
 import requests
 import time
 from app.config.config import envConfig
+
+
+def ensure_jpeg_bytes(img):
+    if img is None:
+        return None
+
+    # -------- numpy → encode --------
+    if isinstance(img, np.ndarray):
+        if img.size == 0:
+            return None
+
+        if img.dtype != np.uint8:
+            img = np.clip(img, 0, 255).astype(np.uint8)
+
+        ok, buf = cv2.imencode(".jpg", img)
+        if not ok or buf is None:
+            return None
+
+        encoded = buf.tobytes()
+        return encoded if len(encoded) > 100 else None
+
+    # -------- already bytes --------
+    if isinstance(img, (bytes, bytearray)):
+        raw = bytes(img)
+        return raw if len(raw) > 100 else None
+
+    return None
+
+def _image_debug_summary(img) -> str:
+    if img is None:
+        return "type=None"
+
+    if isinstance(img, np.ndarray):
+        return f"type=np.ndarray shape={img.shape} dtype={img.dtype} size={img.size}"
+
+    if isinstance(img, (bytes, bytearray)):
+        return f"type={type(img).__name__} len={len(img)}"
+
+    return f"type={type(img).__name__}"
 
 
 # =============================
@@ -434,36 +477,67 @@ class UnknownEmbeddingStore:
     # -----------------------------
     # Utils
     # -----------------------------
+
+
+    def _process_pose_images(self, poses, mode="CREATE"):
+        files = {}
+        clean_poses = {}
+        rejected = []
+
+        for pose_name, pose_data in poses.items():
+            raw_img = pose_data.get("image_bytes") or pose_data.get("image")
+
+            print(f"[AI][{mode}][{pose_name}] raw -> {_image_debug_summary(raw_img)}")
+
+            img_bytes = ensure_jpeg_bytes(raw_img)
+
+            if not img_bytes:
+                rejected.append(pose_name)
+                continue
+
+            # ensure embedding exists
+            embedding = pose_data.get("embedding")
+            if embedding is None:
+                rejected.append(pose_name)
+                continue
+
+            files[f"face_{pose_name}"] = (
+                f"{pose_name}.jpg",
+                img_bytes,
+                "image/jpeg"
+            )
+
+            clean_poses[pose_name] = {
+                "embedding": embedding.tolist() if hasattr(embedding, "tolist") else embedding,
+                "quality": float(pose_data.get("quality", 0)),
+                "face_size": pose_data.get("face_size", {}),
+                "ts": int(pose_data.get("ts", 0)),
+            }
+
+        print(f"[AI][{mode}] files={len(files)} rejected={rejected}")
+
+        return files, clean_poses
+
     def _normalize(self, emb):
         norm = np.linalg.norm(emb)
         if norm == 0:
             return None
         return emb / norm
 
+ 
     def _prepare_create_request(self, payload):
-        """Build multipart request parts from canonical payload."""
-        centroid = np.array(payload["centroid_embedding"], dtype=np.float32)
-        centroid = self._normalize(centroid)
+        centroid = self._normalize(np.array(payload["centroid_embedding"], dtype=np.float32))
         if centroid is None:
-            return None, None, None, None
+            return None
 
         poses = payload.get("poses") or {}
         if not poses:
-            return None, None, None, None
+            return None
 
-        clean_poses = {}
-        files = {}
+        files, clean_poses = self._process_pose_images(poses, mode="CREATE")
 
-        for pose_name, pose_data in poses.items():
-            pose_copy = dict(pose_data)
-            img_bytes = pose_copy.pop("image_bytes", None)
-            if img_bytes:
-                files[f"face_{pose_name}"] = (
-                    f"{pose_name}.jpg",
-                    img_bytes,
-                    "image/jpeg"
-                )
-            clean_poses[pose_name] = pose_copy
+        if not files:
+            return None
 
         data = {
             "unknown_id": "" if payload.get("unknown_id") is None else str(payload.get("unknown_id")),
@@ -476,6 +550,52 @@ class UnknownEmbeddingStore:
         }
 
         return centroid, clean_poses, data, files
+    
+
+
+    def _dump_unknown_payload(self, flow_name, target_url, data, multipart_files, enabled):
+        """Persist exact multipart request fields/files under project-root debug_payloads."""
+        if not enabled:
+            return
+
+        try:
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
+            root = os.path.join(base_dir, "debug_payloads", flow_name, ts)
+            os.makedirs(root, exist_ok=True)
+
+            file_meta = []
+            for field_name, file_tuple in multipart_files.items():
+                filename, file_bytes, content_type = file_tuple
+                output_name = f"{field_name}_{filename}"
+                output_path = os.path.join(root, output_name)
+
+                with open(output_path, "wb") as f:
+                    f.write(file_bytes)
+
+                file_meta.append({
+                    "field": field_name,
+                    "filename": filename,
+                    "content_type": content_type,
+                    "size": len(file_bytes),
+                    "sha256": hashlib.sha256(file_bytes).hexdigest(),
+                    "saved_as": output_name,
+                })
+
+            debug_doc = {
+                "timestamp": ts,
+                "url": target_url,
+                "form_data": data,
+                "files": file_meta,
+            }
+
+            with open(os.path.join(root, "request_payload.json"), "w", encoding="utf-8") as f:
+                json.dump(debug_doc, f, indent=2)
+
+            print(f"[AI][DEBUG] {flow_name} payload dumped at: {root}")
+
+        except Exception as e:
+            print(f"[AI][DEBUG] failed to dump {flow_name} payload: {e}")
 
     def _commit_created_unknown(self, unknown_id, centroid, clean_poses):
         """Commit newly created unknown to the in-memory snapshot atomically."""
@@ -542,40 +662,22 @@ class UnknownEmbeddingStore:
             uid_to_pose_name_index=new_uid_to_pose_name_index,
         )
 
+
     def _prepare_update_request(self, unknown_id, centroid, timestamp, camera_code, poses):
-        """Build canonical multipart request for update_unknown."""
         if not unknown_id:
-            return None, None, None, None
+            return None
 
         centroid_arr = self._normalize(np.array(centroid, dtype=np.float32))
         if centroid_arr is None:
-            return None, None, None, None
+            return None
 
         if not poses:
-            return None, None, None, None
+            return None
 
-        files = {}
-        clean_poses = {}
+        files, clean_poses = self._process_pose_images(poses, mode="UPDATE")
 
-        for pose_name, pose_data in poses.items():
-            image_bytes = pose_data.get("image")
-            if image_bytes:
-                files[f"face_{pose_name}"] = (
-                    f"{pose_name}.jpg",
-                    image_bytes,
-                    "image/jpeg"
-                )
-
-            emb_val = pose_data.get("embedding")
-            if hasattr(emb_val, "tolist"):
-                emb_val = emb_val.tolist()
-
-            clean_poses[pose_name] = {
-                "embedding": emb_val,
-                "quality": float(pose_data.get("quality", 0)),
-                "faceSize": pose_data.get("faceSize", {}),
-                "ts": int(pose_data.get("ts", 0)),
-            }
+        if not files:
+            return None
 
         data = {
             "unknownId": str(unknown_id),
@@ -586,7 +688,7 @@ class UnknownEmbeddingStore:
         }
 
         return centroid_arr, clean_poses, data, files
-
+    
     def _commit_updated_unknown(self, unknown_id, centroid, clean_poses):
         """Commit successful update_unknown response to local snapshot atomically."""
         store = self._store
@@ -839,17 +941,33 @@ class UnknownEmbeddingStore:
     # -----------------------------
     # Add unknown (NEW ENTRY)
     # -----------------------------  
-    def add_unknown(self, payload):
 
+    def add_unknown(self, payload):
         try:
-            centroid, clean_poses, data, multipart_files = self._prepare_create_request(payload)
-            if centroid is None:
-                print("[AI] Invalid payload for add_unknown")
+            result = self._prepare_create_request(payload)
+            if not result:
+                print("[AI] Skipping add_unknown (invalid payload)")
                 return None
 
+            centroid, clean_poses, data, files = result
+
+            print("[AI] FINAL FILES:")
+            for k, v in files.items():
+                print(f"  {k} -> {len(v[1])} bytes")
+
+            self._dump_unknown_payload(
+                flow_name="create_unknown",
+                target_url=envConfig.NODE_CREATE_UNKNOWN_URL,
+                data=data,
+                multipart_files=files,
+                enabled=envConfig.DEBUG_UNKNOWN_CREATE_PAYLOAD,
+            )
+
+            
             response = requests.post(
                 envConfig.NODE_CREATE_UNKNOWN_URL,
-                files=multipart_files,
+                # "https://webhook.site/e9b2337d-6a39-4a6e-af32-9dee8796359a",
+                files=files,
                 data=data,
                 headers={"Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"},
                 timeout=5
@@ -857,17 +975,12 @@ class UnknownEmbeddingStore:
             response.raise_for_status()
 
             res = response.json()
-            print(f"[AI] add_unknown response: {res}")
-
             if not res.get("success"):
                 return None
 
-            unknown_id = (res.get("data") or {}).get("unknownId")
-            if not unknown_id:
-                return None
-
-            # Commit to local store only after Node confirms success.
+            unknown_id = res["data"]["unknownId"]
             self._commit_created_unknown(unknown_id, centroid, clean_poses)
+
             return unknown_id
 
         except Exception as e:
@@ -877,21 +990,29 @@ class UnknownEmbeddingStore:
     # -----------------------------
     # UPDATE (FORWARD ONLY)
     # -----------------------------
+
+
     def update_unknown(self, unknown_id, centroid, timestamp, camera_code, poses):
-        print(f"[DEBUG] Updating unknown {unknown_id} at {timestamp}, poses: {list(poses.keys())}")
         try:
-            centroid_arr, clean_poses, data, files = self._prepare_update_request(
-                unknown_id,
-                centroid,
-                timestamp,
-                camera_code,
-                poses,
+            result = self._prepare_update_request(
+                unknown_id, centroid, timestamp, camera_code, poses
             )
-            if centroid_arr is None:
-                print("[AI] Invalid payload for update_unknown")
+
+            if not result:
+                print("[AI] Skipping update_unknown (invalid payload)")
                 return None
 
-            print(f"[DEBUG] Files: {list(files.keys())}")
+            centroid_arr, clean_poses, data, files = result
+
+            print("[AI] FINAL FILES:", [(k, len(v[1])) for k, v in files.items()])
+
+            self._dump_unknown_payload(
+                flow_name="update_unknown",
+                target_url=envConfig.NODE_UPDATE_UNKNOWN_URL,
+                data=data,
+                multipart_files=files,
+                enabled=envConfig.DEBUG_UNKNOWN_UPDATE_PAYLOAD,
+            )
 
             response = requests.patch(
                 envConfig.NODE_UPDATE_UNKNOWN_URL,
@@ -904,17 +1025,15 @@ class UnknownEmbeddingStore:
 
             res = response.json()
             if not res.get("success"):
-                print(f"[AI] update_unknown API rejected: {res}")
                 return None
 
-            # Commit to local store only after Node confirms success.
             self._commit_updated_unknown(unknown_id, centroid_arr, clean_poses)
-
             return unknown_id
 
         except Exception as e:
             print("[AI] update_unknown failed:", e)
             return None
+
 
 
     # -----------------------------

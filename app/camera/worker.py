@@ -15,6 +15,7 @@ from ultralytics import YOLO
 from app.ai.insight_detector import InsightFaceEngine
 from app.ai.face_mesh_engine import FaceLandmarkerEngine
 from app.camera.extract_person_roi import extract_person_roi
+from app.camera.debug_image_dump import DebugImageDumper
 from app.config.config import envConfig
 from app.events.publisher import EventPublisher
 from app.recognition import embedding_store, unknown_embedding_store
@@ -93,6 +94,10 @@ def _camera_loop(cam: CameraConfig) -> None:
 
     track_event_emitter = TrackEventEmitter(publisher=publisher, gate_type=cam.gate_type)
     builder = UniqueFaceRepresentationBuilder()
+    debug_dumper = DebugImageDumper(
+        enabled=envConfig.DEBUG_IMAGE_DUMP_ENABLED,
+        min_interval_sec=envConfig.DEBUG_IMAGE_DUMP_INTERVAL_SEC,
+    )
 
     track_state = {}
     track_identity = {}
@@ -225,6 +230,14 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                 if face_img.size == 0:
                     continue
+
+                debug_dumper.dump(
+                    cam_code=cam.code,
+                    person_id=person_id,
+                    frame=frame,
+                    face=face_img,
+                    stage=str(state).lower(),
+                )
 
                 pose = get_pose_name(best.get("pose", [None])[0]) or "unknown"
 
@@ -467,7 +480,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         pose_payload[p] = {
                             "embedding": data["embedding"].tolist(),
                             "quality": data["quality"],
-                             "faceSize": {
+                             "face_size": {
                                 "w": w,
                                 "h": h
                             },

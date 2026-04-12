@@ -25,5 +25,9 @@ class EnvConfig:
     MIN_UNKNOWN_CREATION_QUALITY = float(os.getenv("MIN_UNKNOWN_CREATION_QUALITY"))
     MIN_UNKNOWN_CREATE_FRAMES = int(os.getenv("MIN_UNKNOWN_CREATE_FRAMES", "2"))
     SCRFD_THRESHOLD = float(os.getenv("SCRFD_THRESHOLD", "0.50"))
+    DEBUG_IMAGE_DUMP_ENABLED = os.getenv("DEBUG_IMAGE_DUMP_ENABLED", "false").lower() in ("1", "true", "yes")
+    DEBUG_IMAGE_DUMP_INTERVAL_SEC = float(os.getenv("DEBUG_IMAGE_DUMP_INTERVAL_SEC", "2.0"))
+    DEBUG_UNKNOWN_CREATE_PAYLOAD = os.getenv("DEBUG_UNKNOWN_CREATE_PAYLOAD", "false").lower() in ("1", "true", "yes")
+    DEBUG_UNKNOWN_UPDATE_PAYLOAD = os.getenv("DEBUG_UNKNOWN_UPDATE_PAYLOAD", "false").lower() in ("1", "true", "yes")
 
 envConfig = EnvConfig()  
