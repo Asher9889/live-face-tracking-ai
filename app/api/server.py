@@ -115,69 +115,145 @@ async def register_face(files: List[UploadFile] = File(...)):
     }
 
 
+# @app.post("/merge")
+# def merge_embeddings(data: MergeRequest):
+#     try:
+#         embeddings = np.array(data.embeddings, dtype=np.float32)
+#         counts = np.array(data.counts, dtype=np.float32)
+
+#         # 1. Basic validation
+#         if len(embeddings) < 2:
+#             return {"status": "error", "message": "Need at least 2 embeddings"}
+
+#         if len(embeddings) != len(counts):
+#             return {"status": "error", "message": "Embeddings and counts mismatch"}
+
+#         if np.any(counts <= 0):
+#             return {"status": "error", "message": "Counts must be positive"}
+
+#         if embeddings.shape[1] != EXPECTED_DIM:
+#             return {
+#                 "status": "error",
+#                 "message": f"Invalid embedding dimension. Expected {EXPECTED_DIM}, got {embeddings.shape[1]}"
+#             }
+
+#         # 2. Normalize embeddings
+#         normalized = []
+#         for e in embeddings:
+#             n = normalize(e)
+#             if n is None:
+#                 return {"status": "error", "message": "Zero norm embedding detected"}
+#             normalized.append(n)
+
+#         embeddings = np.array(normalized)
+
+#         # 3. Similarity validation
+#         min_similarity = 1.0
+
+#         for i in range(len(embeddings)):
+#             for j in range(i + 1, len(embeddings)):
+#                 sim = cosine_similarity(embeddings[i], embeddings[j])
+#                 min_similarity = min(min_similarity, sim)
+
+#                 if sim < 0.7:
+#                     return {
+#                         "status": "error",
+#                         "message": f"Embeddings too different (similarity={sim:.3f})"
+#                     }
+
+#         # 4. Weighted merge
+#         weighted_sum = np.sum(embeddings * counts[:, None], axis=0)
+#         merged = weighted_sum / np.sum(counts)
+
+#         merged = normalize(merged)
+#         if merged is None:
+#             return {"status": "error", "message": "Merged embedding invalid"}
+
+#         # 5. Confidence metrics
+#         sims = [cosine_similarity(merged, e) for e in embeddings]
+
+#         return {
+#             "status": "success",
+#             "mergedEmbedding": merged.tolist(),
+#             "totalCount": int(np.sum(counts)),
+#             "minSimilarity": float(min_similarity),
+#             "avgSimilarity": float(np.mean(sims))
+#         }
+
+#     except Exception as e:
+#         return {
+#             "status": "error",
+#             "message": f"Merge failed: {str(e)}"
+#         }
+
 @app.post("/merge")
 def merge_embeddings(data: MergeRequest):
     try:
         embeddings = np.array(data.embeddings, dtype=np.float32)
-        counts = np.array(data.counts, dtype=np.float32)
+        weights = np.array(data.weights, dtype=np.float32)
+        qualities = np.array(data.qualities, dtype=np.float32)
 
-        # 1. Basic validation
         if len(embeddings) < 2:
             return {"status": "error", "message": "Need at least 2 embeddings"}
 
-        if len(embeddings) != len(counts):
-            return {"status": "error", "message": "Embeddings and counts mismatch"}
-
-        if np.any(counts <= 0):
-            return {"status": "error", "message": "Counts must be positive"}
+        if not (len(embeddings) == len(weights) == len(qualities)):
+            return {"status": "error", "message": "Input size mismatch"}
 
         if embeddings.shape[1] != EXPECTED_DIM:
+            return {"status": "error", "message": "Invalid embedding dimension"}
+
+        # ================================
+        # 🔥 CHANGE 1: Normalize (vectorized)
+        # ================================
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        if np.any(norms == 0):
+            return {"status": "error", "message": "Zero norm embedding"}
+
+        embeddings = embeddings / norms
+
+        # ================================
+        # 🔥 CHANGE 2: Compute effective weights
+        # WHY: combine quality + history
+        # ================================
+        effective_weights = weights * qualities
+
+        # ================================
+        # 🔥 CHANGE 3: Initial centroid
+        # ================================
+        centroid = np.average(embeddings, axis=0, weights=effective_weights)
+        centroid = centroid / np.linalg.norm(centroid)
+
+        # ================================
+        # 🔥 CHANGE 4: Outlier detection
+        # ================================
+        sims = embeddings @ centroid
+
+        THRESHOLD = 0.55
+        mask = sims >= THRESHOLD
+
+        if np.sum(mask) < 2:
             return {
                 "status": "error",
-                "message": f"Invalid embedding dimension. Expected {EXPECTED_DIM}, got {embeddings.shape[1]}"
+                "message": "Not enough consistent embeddings"
             }
 
-        # 2. Normalize embeddings
-        normalized = []
-        for e in embeddings:
-            n = normalize(e)
-            if n is None:
-                return {"status": "error", "message": "Zero norm embedding detected"}
-            normalized.append(n)
+        filtered_embeddings = embeddings[mask]
+        filtered_weights = effective_weights[mask]
 
-        embeddings = np.array(normalized)
+        # ================================
+        # 🔥 CHANGE 5: Final weighted merge
+        # ================================
+        merged = np.average(filtered_embeddings, axis=0, weights=filtered_weights)
+        merged = merged / np.linalg.norm(merged)
 
-        # 3. Similarity validation
-        min_similarity = 1.0
-
-        for i in range(len(embeddings)):
-            for j in range(i + 1, len(embeddings)):
-                sim = cosine_similarity(embeddings[i], embeddings[j])
-                min_similarity = min(min_similarity, sim)
-
-                if sim < 0.7:
-                    return {
-                        "status": "error",
-                        "message": f"Embeddings too different (similarity={sim:.3f})"
-                    }
-
-        # 4. Weighted merge
-        weighted_sum = np.sum(embeddings * counts[:, None], axis=0)
-        merged = weighted_sum / np.sum(counts)
-
-        merged = normalize(merged)
-        if merged is None:
-            return {"status": "error", "message": "Merged embedding invalid"}
-
-        # 5. Confidence metrics
-        sims = [cosine_similarity(merged, e) for e in embeddings]
+        final_sims = filtered_embeddings @ merged
 
         return {
             "status": "success",
             "mergedEmbedding": merged.tolist(),
-            "totalCount": int(np.sum(counts)),
-            "minSimilarity": float(min_similarity),
-            "avgSimilarity": float(np.mean(sims))
+            "minSimilarity": float(np.min(final_sims)),
+            "avgSimilarity": float(np.mean(final_sims)),
+            "outliers": np.where(~mask)[0].tolist()
         }
 
     except Exception as e:
@@ -185,6 +261,8 @@ def merge_embeddings(data: MergeRequest):
             "status": "error",
             "message": f"Merge failed: {str(e)}"
         }
+
+
 
 @app.post("/recognition/check-duplicate")
 def check_duplicate(data: DuplicateCheckRequest):
