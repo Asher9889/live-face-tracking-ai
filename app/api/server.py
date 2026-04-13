@@ -19,8 +19,9 @@ from typing import List
 
 EXPECTED_DIM = 512
 class MergeRequest(BaseModel):
-    embeddings: List[List[float]] = Field(..., min_items=2)
-    counts: List[int] = Field(..., min_items=2)
+    embeddings: List[List[float]]
+    weights: List[float]
+    qualities: List[float]
 
 class DuplicateCheckRequest(BaseModel):
     embedding: List[float]
