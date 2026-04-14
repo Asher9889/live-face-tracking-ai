@@ -269,7 +269,7 @@ def merge_embeddings(data: MergeRequest):
 def check_duplicate(data: DuplicateCheckRequest):
     try:
         embedding = data.embedding
-        threshold = data.threshold or 0.5
+        threshold = data.threshold or 0.40
 
         # Validate embedding
         if not embedding or len(embedding) == 0:
@@ -336,76 +336,15 @@ class PromoteRequest(BaseModel):
 @app.post("/recognition/promote-unknown")
 def promote_unknown(data: PromoteRequest):
     try:
-        emb = np.array(data.embedding, dtype=np.float32)
+        print(f"[AI] Promotion triggered: {data.unknownId} → {data.employeeId}")
 
-        # Validate embedding
-        if emb.shape[0] != 512:
-            return {
-                "success": False,
-                "error": "Invalid embedding dimension"
-            }
-
-        norm = np.linalg.norm(emb)
-        if norm < 1e-6:
-            return {
-                "success": False,
-                "error": "Invalid embedding (zero norm)"
-            }
-
-        emb = emb / norm
-
-        with lock:
-
-            # Validate unknown exists
-
-            if data.unknownId not in unknown_embedding_store.id_to_index:
-                return {
-                    "success": False,
-                    "error": "Unknown ID not found in AI store"
-                }
-
-            # Prevent duplicate employee
-            if data.employeeId in embedding_store.employee_ids:
-                return {
-                    "success": True,
-                    "message": "Already promoted"
-                }
-
-            # REMOVE from unknown store
-            idx = unknown_embedding_store.id_to_index[data.unknownId]
-
-            unknown_embedding_store.embeddings = np.delete(
-                unknown_embedding_store.embeddings, idx, axis=0
-            )
-
-            unknown_embedding_store.counts.pop(idx)
-            unknown_embedding_store.unknown_ids.pop(idx)
-
-            # rebuild index map
-            unknown_embedding_store.id_to_index = {
-                uid: i for i, uid in enumerate(unknown_embedding_store.unknown_ids)
-            }
-
-            # ADD to employee store
-            embedding_store.employee_ids.append(data.employeeId)
-            embedding_store.employee_names.append(data.employeeName)
-
-            if (
-                embedding_store.embeddings is None
-                or embedding_store.embeddings.shape[0] == 0
-            ):
-                embedding_store.embeddings = emb.reshape(1, -1)
-            else:
-                embedding_store.embeddings = np.vstack([
-                    embedding_store.embeddings,
-                    emb
-                ])
-
-        print(f"[AI] Promoted unknown {data.unknownId} → {data.employeeId}")
+        # 🔥 Just reload stores
+        embedding_store.load_embeddings()
+        unknown_embedding_store.load_unknown_embeddings()
 
         return {
             "success": True,
-            "message": "Promoted successfully"
+            "message": "Stores reloaded after promotion"
         }
 
     except Exception as e:
@@ -413,6 +352,85 @@ def promote_unknown(data: PromoteRequest):
             "success": False,
             "error": str(e)
         }
+# def promote_unknown(data: PromoteRequest):
+#     try:
+#         emb = np.array(data.embedding, dtype=np.float32)
+
+#         # Validate embedding
+#         if emb.shape[0] != 512:
+#             return {
+#                 "success": False,
+#                 "error": "Invalid embedding dimension"
+#             }
+
+#         norm = np.linalg.norm(emb)
+#         if norm < 1e-6:
+#             return {
+#                 "success": False,
+#                 "error": "Invalid embedding (zero norm)"
+#             }
+
+#         emb = emb / norm
+
+#         with lock:
+
+#             # Validate unknown exists
+
+#             if data.unknownId not in unknown_embedding_store.id_to_index:
+#                 return {
+#                     "success": False,
+#                     "error": "Unknown ID not found in AI store"
+#                 }
+
+#             # Prevent duplicate employee
+#             if data.employeeId in embedding_store.employee_ids:
+#                 return {
+#                     "success": True,
+#                     "message": "Already promoted"
+#                 }
+
+#             # REMOVE from unknown store
+#             idx = unknown_embedding_store.id_to_index[data.unknownId]
+
+#             unknown_embedding_store.embeddings = np.delete(
+#                 unknown_embedding_store.embeddings, idx, axis=0
+#             )
+
+#             unknown_embedding_store.counts.pop(idx)
+#             unknown_embedding_store.unknown_ids.pop(idx)
+
+#             # rebuild index map
+#             unknown_embedding_store.id_to_index = {
+#                 uid: i for i, uid in enumerate(unknown_embedding_store.unknown_ids)
+#             }
+
+#             # ADD to employee store
+#             embedding_store.employee_ids.append(data.employeeId)
+#             embedding_store.employee_names.append(data.employeeName)
+
+#             if (
+#                 embedding_store.embeddings is None
+#                 or embedding_store.embeddings.shape[0] == 0
+#             ):
+#                 embedding_store.embeddings = emb.reshape(1, -1)
+#             else:
+#                 embedding_store.embeddings = np.vstack([
+#                     embedding_store.embeddings,
+#                     emb
+#                 ])
+
+#         print(f"[AI] Promoted unknown {data.unknownId} → {data.employeeId}")
+
+#         return {
+#             "success": True,
+#             "message": "Promoted successfully"
+#         }
+
+#     except Exception as e:
+#         return {
+#             "success": False,
+#             "error": str(e)
+#         }
     
 
 
