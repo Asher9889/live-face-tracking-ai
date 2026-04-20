@@ -380,7 +380,6 @@ import requests
 import time
 from app.config.config import envConfig
 
-
 # =============================
 # SNAPSHOT DATA (IMMUTABLE)
 # =============================
@@ -426,9 +425,9 @@ class UnknownEmbeddingStore:
         )
 
         # thresholds
-        self.centroid_threshold = 0.50
-        self.pose_threshold = 0.60
-        self.fallback_pose_threshold = 0.70
+        self.centroid_threshold = 0.45
+        self.pose_threshold = 0.50
+        self.fallback_pose_threshold = 0.50
         self.margin_threshold = 0.03
 
     # -----------------------------
@@ -759,7 +758,115 @@ class UnknownEmbeddingStore:
     # -----------------------------
     # MATCH
     # -----------------------------
+    # def find_match(self, embedding):
+
+    #     """
+    #         Full Flow for matching
+    #         1. Try centroid match
+    #         → if good → done
+
+    #         2. Else try fallback pose
+    #         → get candidate UID
+
+    #         3. Validate candidate using centroid
+    #         → if ok → accept
+    #         → else → reject
+    #     """
+
+    #     store = self._store  # snapshot
+
+    #     emb = self._normalize(embedding)
+    #     if emb is None:
+    #         return None
+
+    #     if store.centroid_matrix.shape[0] == 0:
+    #         return None
+
+    #     # =============================
+    #     # STAGE 1: CENTROID
+    #     # =============================
+    #     scores = np.dot(store.centroid_matrix, emb)
+
+    #     best_idx = int(np.argmax(scores))
+    #     best_score = float(scores[best_idx])
+
+    #     if best_score >= self.centroid_threshold:
+
+    #         # margin check
+    #         if len(scores) > 1:
+    #             second = np.partition(scores, -2)[-2]
+    #             # if best_score - second < self.margin_threshold:
+    #             #     return None
+
+    #         uid = store.unknown_ids[best_idx]
+
+    #         # =============================
+    #         # STAGE 2: POSE REFINE
+    #         # =============================
+    #         pose_indices = store.uid_to_pose_indices.get(uid, [])
+
+    #         if not pose_indices:
+    #             return {
+    #                 "unknown_id": uid,
+    #                 "similarity": best_score,
+    #                 "stage": "centroid"
+    #             }
+
+    #         pose_embs = store.pose_matrix[pose_indices]
+    #         pose_scores = np.dot(pose_embs, emb)
+
+    #         best_pose_score = float(np.max(pose_scores))
+
+    #         if best_pose_score >= self.pose_threshold:
+    #             return {
+    #                 "unknown_id": uid,
+    #                 "similarity": best_pose_score,
+    #                 "stage": "pose_refined"
+    #             }
+
+    #         return {
+    #             "unknown_id": uid,
+    #             "similarity": best_score,
+    #             "stage": "centroid_only"
+    #         }
+
+    #     # =============================
+    #     # STAGE 3: FALLBACK POSE (IMPORTANT)
+    #     # =============================
+    #     if store.pose_matrix.shape[0] == 0:
+    #         return None
+
+    #     pose_scores = np.dot(store.pose_matrix, emb)
+
+    #     best_pose_idx = int(np.argmax(pose_scores))
+    #     best_pose_score = float(pose_scores[best_pose_idx])
+
+    #     if best_pose_score >= self.fallback_pose_threshold:
+    #         uid = store.pose_owner[best_pose_idx]
+
+    #         return {
+    #             "unknown_id": uid,
+    #             "similarity": best_pose_score,
+    #             "stage": "pose_fallback"
+    #         }
+
+    #     return None
+
     def find_match(self, embedding):
+
+        """
+        FINAL MATCHING FLOW
+
+        1. Try centroid match
+            → if pass → accept (optionally refine with pose)
+
+        2. Else try fallback pose match
+            → get candidate UID
+
+        3. Validate candidate using centroid
+            → if pass → accept
+            → else → reject
+        """
 
         store = self._store  # snapshot
 
@@ -771,7 +878,7 @@ class UnknownEmbeddingStore:
             return None
 
         # =============================
-        # STAGE 1: CENTROID
+        # STAGE 1: CENTROID MATCH
         # =============================
         scores = np.dot(store.centroid_matrix, emb)
 
@@ -780,42 +887,34 @@ class UnknownEmbeddingStore:
 
         if best_score >= self.centroid_threshold:
 
-            # margin check
-            if len(scores) > 1:
-                second = np.partition(scores, -2)[-2]
-                if best_score - second < self.margin_threshold:
-                    return None
-
             uid = store.unknown_ids[best_idx]
 
-            # =============================
-            # STAGE 2: POSE REFINE
-            # =============================
+            # -----------------------------
+            # Optional: Pose refine (confidence boost only)
+            # -----------------------------
             pose_indices = store.uid_to_pose_indices.get(uid, [])
 
-            if not pose_indices:
-                return {
-                    "unknown_id": uid,
-                    "similarity": best_score,
-                    "stage": "centroid"
-                }
+            if pose_indices:
+                pose_embs = store.pose_matrix[pose_indices]
+                pose_scores = np.dot(pose_embs, emb)
+                best_pose_score = float(np.max(pose_scores))
 
-            pose_embs = store.pose_matrix[pose_indices]
-            pose_scores = np.dot(pose_embs, emb)
+                if best_pose_score >= self.pose_threshold:
+                    return {
+                        "unknown_id": uid,
+                        "similarity": best_pose_score,
+                        "stage": "pose_refined"
+                    }
 
-            best_pose_score = float(np.max(pose_scores))
-
-            if best_pose_score >= self.pose_threshold:
-                return {
-                    "unknown_id": uid,
-                    "similarity": best_pose_score,
-                    "stage": "pose_refined"
-                }
-
-            return None
+            # fallback to centroid match
+            return {
+                "unknown_id": uid,
+                "similarity": best_score,
+                "stage": "centroid_only"
+            }
 
         # =============================
-        # STAGE 3: FALLBACK POSE (IMPORTANT)
+        # STAGE 2: FALLBACK POSE MATCH
         # =============================
         if store.pose_matrix.shape[0] == 0:
             return None
@@ -825,13 +924,30 @@ class UnknownEmbeddingStore:
         best_pose_idx = int(np.argmax(pose_scores))
         best_pose_score = float(pose_scores[best_pose_idx])
 
-        if best_pose_score >= self.fallback_pose_threshold:
-            uid = store.pose_owner[best_pose_idx]
+        if best_pose_score < self.fallback_pose_threshold:
+            return None
 
+        # -----------------------------
+        # Candidate identity from pose
+        # -----------------------------
+        uid = store.pose_owner[best_pose_idx]
+
+        # =============================
+        # STAGE 3: VALIDATE WITH CENTROID (CRITICAL)
+        # =============================
+        try:
+            uid_index = store.unknown_ids.index(uid)
+        except ValueError:
+            return None
+
+        centroid = store.centroid_matrix[uid_index]
+        centroid_score = float(np.dot(centroid, emb))
+
+        if centroid_score >= 0.40:   # loose validation threshold
             return {
                 "unknown_id": uid,
                 "similarity": best_pose_score,
-                "stage": "pose_fallback"
+                "stage": "pose_fallback_validated"
             }
 
         return None

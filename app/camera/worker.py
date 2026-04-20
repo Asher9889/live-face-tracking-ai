@@ -295,8 +295,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                 # 🔵 STAGE 2: UNKNOWN
                 # =====================================================
                 elif state == TrackState.COLLECTING_UNKNOWN:
-
                     buffer = track_unknown_buffer.get(person_id, [])
+
+                    if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
+                        continue
+
                     buffer = builder.add(buffer, embedding, quality, pose, img=face_img)
                     track_unknown_buffer[person_id] = buffer
 
