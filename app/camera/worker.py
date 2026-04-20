@@ -202,6 +202,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     analysis = face_landmarker_engine.analyze(face_img)
+                    is_valid = face_landmarker_engine.is_valid_face(analysis) 
+                    if not is_valid:
+                        print(f"[Camera {cam.code}] Face rejected by FaceLandmarker is_valid_face check")
+                        continue
                     quality = insight_engine.compute_face_quality(f, face_img, analysis)
 
                     if quality < 0.15:

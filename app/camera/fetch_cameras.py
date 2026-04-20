@@ -52,14 +52,27 @@ def fetch_cameras() -> List[CameraConfig]:
     cameras = payload.get("data", [])
     enabled_cameras = [c for c in cameras if c.get("enabled")]
 
+    # Webcam mode should run a single local source, not one thread per DB camera.
+    if getattr(envConfig, "USE_WEBCAM", False):
+        if enabled_cameras:
+            selected_cam = enabled_cameras[0]
+            print(f"[Server] USE_WEBCAM=true → selecting only one camera: {selected_cam.get('code')}")
+            enabled_cameras = [selected_cam]
+        else:
+            print("[Server] USE_WEBCAM=true but no enabled cameras from API")
+
     print(f"[Server] Found {len(enabled_cameras)} enabled cameras")
 
     final_configs = []
 
     for cam in enabled_cameras:
         # ===== Validate required fields =====
-        if not cam.get("rtspUrl") or not cam.get("code"):
+        if not cam.get("code"):
             print(f"[Server] Skipping invalid camera config: {cam}")
+            continue
+
+        if not getattr(envConfig, "USE_WEBCAM", False) and not cam.get("rtspUrl"):
+            print(f"[Server] Skipping invalid camera config (missing rtspUrl): {cam}")
             continue
 
         # If global override is set, always use local webcam
