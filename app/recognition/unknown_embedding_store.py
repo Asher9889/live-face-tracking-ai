@@ -1010,8 +1010,10 @@ class UnknownEmbeddingStore:
 
             print(f"[DEBUG] Files: {list(files.keys())}")
 
+            update_url = f"{envConfig.NODE_UPDATE_UNKNOWN_URL.rstrip('/')}/{unknown_id}"
+
             response = requests.patch(
-                envConfig.NODE_UPDATE_UNKNOWN_URL,
+                update_url,
                 files=files,
                 data=data,
                 headers={"Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"},
