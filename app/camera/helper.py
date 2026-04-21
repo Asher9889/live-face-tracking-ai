@@ -205,6 +205,8 @@ def select_best_face(faces_with_quality):
 
     return best
 
+
+
 def crop_with_margin(frame, x1, y1, x2, y2, margin=0.2):
     h, w = frame.shape[:2]
 
@@ -254,35 +256,37 @@ def now_ms():
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
 def fast_filter(face):
-    # 1. detection confidence
+    # ----------------------------
+    # 1. Detection confidence
+    # ----------------------------
     if face["score"] < envConfig.SCRFD_THRESHOLD:
         return False
 
-    # 2. face size
+    # ----------------------------
+    # 2. Face size (width check)
+    # ----------------------------
     x1, y1, x2, y2 = face["bbox"]
     w = x2 - x1
+
     if w < envConfig.MIN_FACE_WIDTH:
         return False
 
-    kps = face.get("kps")
-    if kps is None:
+    # ----------------------------
+    # 3. Pose (use model output)
+    # ----------------------------
+    pose = face.get("pose")
+    if pose is None:
         return False
 
-    # 3. yaw
-    left_eye, right_eye, nose = kps[0], kps[1], kps[2]
-    eye_center = (left_eye[0] + right_eye[0]) / 2
-    eye_width = abs(right_eye[0] - left_eye[0]) + 1e-6
-    yaw = ((nose[0] - eye_center) / eye_width) * 90
+    yaw, pitch, roll = pose
 
-    if abs(yaw) > 45:
+    # only reject extreme angles (cheap filter)
+    if abs(yaw) > 50:
         return False
 
-    # 4. roll
-    dy = right_eye[1] - left_eye[1]
-    dx = right_eye[0] - left_eye[0]
-    roll = np.degrees(np.arctan2(dy, dx))
-
-    if abs(roll) > 30:
+    if abs(roll) > 35:
         return False
+
+    # ⚠️ DO NOT filter pitch here (CCTV downward angle common)
 
     return True

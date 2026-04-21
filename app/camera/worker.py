@@ -301,6 +301,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 # Filter bad faces after detetction
                 faces = [f for f in faces if fast_filter(f)]
                 if not faces:
+                    print(f"[Camera {cam.code}] No valid faces after fast_filter")
                     continue
 
                 # -------------------------
@@ -316,7 +317,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     embedding = f["embedding"]
 
-                    # 🔥 GLOBAL stability check (once)
+                    # 🔥 GLOBAL stability check (once per loop)
                     if not is_stable_embedding_global(track_embedding_state, person_id, embedding):
                         print(f"[{now_ms()}][Camera {cam.code}] Unstable embedding → person_id={person_id}")
                         continue
@@ -327,17 +328,27 @@ def _camera_loop(cam: CameraConfig) -> None:
                     if face_img.size == 0:
                         continue
 
+                    f["face_img"] = face_img
+
                     analysis = face_landmarker_engine.analyze(face_img)
                     # is_valid = face_landmarker_engine.is_valid_face(analysis, cam.code) 
-                    score = face_landmarker_engine.score_face(analysis)
-                    if score == 0:
-                        continue
+                    mp_score = face_landmarker_engine.score_face(analysis)
+
+                    if not analysis.get("valid"):
+                        mp_score = 0.3   # fallback, not assumption, just degradation
+                    # if mp_score == 0:
+                    #     mp_score = 0.3  # fallback, not assumption, just degradation
+
                     # if not is_valid:
                     # #     # print(f"[Camera {cam.code}] Face rejected by FaceLandmarker is_valid_face check")
                     # #     continue
                     quality = insight_engine.compute_face_quality(f, face_img, analysis)
-                    final_quality = quality * score
-                    if final_quality < 0.15:
+                    if quality < 0:
+                        continue
+
+                    final_quality = ( 0.6 * quality + 0.4 * mp_score ) 
+                    print(f"[{now_ms()}][Camera {cam.code}] Face quality → person_id={person_id}, quality={quality:.3f}, mp_score={mp_score:.3f}, final_quality={final_quality:.3f}")
+                    if final_quality < 0.35:
                         continue
 
                     f["quality"] = final_quality
@@ -346,20 +357,18 @@ def _camera_loop(cam: CameraConfig) -> None:
                 if not valid_faces:
                     continue
 
-                best = select_best_face(valid_faces)
-                if best is None:
+                best_face = select_best_face(valid_faces)
+                if best_face is None:
                     continue
 
-                embedding = best["embedding"]
-                quality = best["quality"]
+                embedding = best_face["embedding"]
+                quality = best_face["quality"]
 
-                x1, y1, x2, y2 = map(int, best["bbox"])
-                face_img = crop_with_margin(frame, x1, y1, x2, y2, margin=0.2)
-
-                if face_img.size == 0:
+                face_img = best_face.get("face_img")
+                if face_img is None or face_img.size == 0:
                     continue
 
-                pose = get_pose_name(best.get("pose", [None])[0]) or "unknown"
+                pose = get_pose_name(best_face.get("pose", [None])[0]) or "unknown"
 
                 # =====================================================
                 # 🔵 STAGE 1: KNOWN
@@ -367,9 +376,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                 if state == TrackState.COLLECTING_KNOWN:
 
                     # stability ONLY here
-                    if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
-                        log(cam, person_id, "STABILITY", "REJECTED")
-                        continue
+                    # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
+                    #     log(cam, person_id, "STABILITY", "REJECTED")
+                    #     continue
 
                     buffer = track_known_buffer.get(person_id, [])
                     buffer.append({
@@ -430,8 +439,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                 elif state == TrackState.COLLECTING_UNKNOWN:
                     buffer = track_unknown_buffer.get(person_id, [])
 
-                    if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
-                        continue
+                    # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
+                    #     continue
 
                     buffer = builder.add(buffer, embedding, quality, pose, img=face_img)
                     track_unknown_buffer[person_id] = buffer
