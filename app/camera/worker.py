@@ -11,6 +11,7 @@ from app.camera.types import CameraConfig, TrackState
 from app.config import FRAME_RATE
 
 from ultralytics import YOLO
+from queue import Queue, Empty
 
 from app.ai.insight_detector import InsightFaceEngine
 from app.ai.face_mesh_engine import FaceLandmarkerEngine
@@ -29,6 +30,40 @@ from app.camera.payload_builder import build_unknown_payload
 MIN_UNKNOWN_CREATION_QUALITY = float(envConfig.MIN_UNKNOWN_CREATION_QUALITY)
 MIN_UNKNOWN_CREATE_FRAMES = int(envConfig.MIN_UNKNOWN_CREATE_FRAMES)
 
+RTSP_TRANSPORT = os.getenv("RTSP_TRANSPORT", "tcp").strip().lower()
+RTSP_TIMEOUT_US = int(os.getenv("RTSP_TIMEOUT_US", "5000000"))
+RTSP_BUFFER_SIZE = int(os.getenv("RTSP_BUFFER_SIZE", "1024000"))
+CAPTURE_BACKOFF_INITIAL = float(os.getenv("CAPTURE_BACKOFF_INITIAL", "1.0"))
+CAPTURE_BACKOFF_MAX = float(os.getenv("CAPTURE_BACKOFF_MAX", "30.0"))
+
+PROFILE_WEBCAM = dict(
+    yaw_threshold=20,
+    pitch_threshold=25,
+    roll_threshold=20,
+    occlusion_threshold=0.50,
+    ear_asymmetry_threshold=0.07,
+    upscale_to=None,                  # no upscaling needed
+    iris_radius_factor=0.035,         # min_iris_radius = face_size * factor
+    min_iris_radius_ratio=0.45,
+    max_iris_center_brightness=140.0,
+    max_iris_brightness_asymmetry=60.0,
+)
+ 
+PROFILE_CCTV = dict(
+    yaw_threshold=30,
+    pitch_threshold=35,               # ceiling-mount: normal downward pitch
+    roll_threshold=25,
+    occlusion_threshold=0.70,         # eyeSquint is noisy at low resolution
+    ear_asymmetry_threshold=0.13,     # 1px noise = 0.02-0.04 EAR at 80px
+    upscale_to=160,                   # upscale before inference (landmarks improve dramatically)
+    iris_radius_factor=0.025,         # smaller faces → smaller absolute iris
+    min_iris_radius_ratio=0.40,       # looser ratio for small/noisy iris fitting
+    max_iris_center_brightness=150.0, # slightly more tolerant for compressed CCTV frames
+    max_iris_brightness_asymmetry=70.0,
+    max_lateral_asymmetry=0.25,       # was 0.20 — allow mild yaw (13°) turns through
+    eye_score_threshold=0.55,
+)
+ 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -38,7 +73,7 @@ path = os.path.abspath(path)
 model = YOLO("yolov8n.pt")   
 insight_engine = InsightFaceEngine()
 publisher = EventPublisher(redis_client)
-face_landmarker_engine = FaceLandmarkerEngine(model_path=path) 
+face_landmarker_engine = FaceLandmarkerEngine(model_path=path)  
 
 class CameraState(str, Enum):
     CONNECTING = "CONNECTING"
@@ -57,7 +92,14 @@ def _open_capture(rtsp_url: str):
         print("Camera FPS:", "webcam", cap.get(cv2.CAP_PROP_FPS))
         return cap
 
+    ffmpeg_options = [f"rtsp_transport;{RTSP_TRANSPORT}", f"stimeout;{RTSP_TIMEOUT_US}", f"buffer_size;{RTSP_BUFFER_SIZE}"]
+    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "|".join(ffmpeg_options)
+
     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+    try:
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    except Exception:
+        pass
     print("Camera FPS:", rtsp_url, cap.get(cv2.CAP_PROP_FPS))
     return cap
 
@@ -88,8 +130,9 @@ def _camera_loop(cam: CameraConfig) -> None:
     print(f"[Camera] Worker started → {cam.code}")
     print("🔥 RUNNING _camera_loop")
 
-    target_fps = int(FRAME_RATE)
-    interval = 1.0 / target_fps
+    # target_fps = int(FRAME_RATE)
+    # interval = 1.0 / target_fps
+    backoff = CAPTURE_BACKOFF_INITIAL
 
     track_event_emitter = TrackEventEmitter(publisher=publisher, gate_type=cam.gate_type)
     builder = UniqueFaceRepresentationBuilder()
@@ -102,29 +145,90 @@ def _camera_loop(cam: CameraConfig) -> None:
     track_unknown_meta = {}
     track_embedding_state = {}
 
+    # For RTSP Thread
+    frame_queue = Queue(maxsize=1)
+    stop_event = threading.Event()
+    frame_count = 0
+
+
+
+    def _reader(cap):
+        while not stop_event.is_set():
+            ret, frame = cap.read()
+
+            if not ret or frame is None:
+                continue
+
+            if frame_queue.full():
+                try:
+                    frame_queue.get_nowait()  # drop old frame
+                except:
+                    pass
+
+            frame_queue.put(frame)
+
+
     while True:
         cap = _open_capture(cam.rtsp_url)
 
         if not cap.isOpened():
-            time.sleep(2)
+            sleep_time = min(backoff, CAPTURE_BACKOFF_MAX)
+            print(f"[Camera] ❌ Connect failed → {cam.code}; retry in {sleep_time:.1f}s")
+            time.sleep(sleep_time)
+            backoff = min(backoff * 2, CAPTURE_BACKOFF_MAX)
             continue
 
-        last_processed = 0.0
+        stop_event.clear()
+
+        reader_thread = threading.Thread(
+            target=_reader,
+            args=(cap,),
+            daemon=True
+        )
+        reader_thread.start()
+
+        backoff = CAPTURE_BACKOFF_INITIAL
+
+        # last_processed = 0.0
 
         while True:
-            if not cap.grab():
+            # if not cap.grab():
+            #     print(f"[Camera] ⚠️ Stream lost → {cam.code}; reconnecting")
+            #     cap.release()
+            #     break
+
+            # now = time.time()
+            # if now - last_processed < interval:
+            #     continue
+
+            # ret, frame = cap.retrieve()
+            # if not ret or frame is None:
+            #     continue
+
+            # last_processed = now
+
+            try:
+                frame = frame_queue.get(timeout=5)
+                if frame is None or frame.size == 0:
+                    continue
+            except Empty:
+                print(f"[Camera] ⚠️ No frames → {cam.code}; reconnecting")
+                # cap.release()
+                # stop_event.set()
+                # break
                 cap.release()
+                stop_event.set()
+
+                track_state.clear()
+                track_identity.clear()
+                track_known_buffer.clear()
+                track_unknown_buffer.clear()
+                track_unknown_identity.clear()
+                track_unknown_meta.clear()
+                track_embedding_state.clear()
+
                 break
 
-            now = time.time()
-            if now - last_processed < interval:
-                continue
-
-            ret, frame = cap.retrieve()
-            if not ret or frame is None:
-                continue
-
-            last_processed = now
             frame_h, frame_w = frame.shape[:2]
 
             results = model.track(frame, persist=True, classes=[0], conf=0.25, verbose=False)
@@ -206,9 +310,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     analysis = face_landmarker_engine.analyze(face_img)
-                    is_valid = face_landmarker_engine.is_valid_face(analysis) 
+                    is_valid = face_landmarker_engine.is_valid_face(analysis, cam.code) 
                     if not is_valid:
-                        print(f"[Camera {cam.code}] Face rejected by FaceLandmarker is_valid_face check")
+                        # print(f"[Camera {cam.code}] Face rejected by FaceLandmarker is_valid_face check")
                         continue
                     quality = insight_engine.compute_face_quality(f, face_img, analysis)
 
