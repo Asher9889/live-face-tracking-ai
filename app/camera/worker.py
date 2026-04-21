@@ -186,6 +186,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                 if not faces:
                     continue
 
+                if len(faces) > 1:
+                    print(f"[Camera {cam.code}] Skipping ROI with multiple faces: {len(faces)}")
+                    continue
+
                 # -------------------------
                 # QUALITY FILTER
                 # -------------------------

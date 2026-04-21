@@ -727,9 +727,9 @@ class FaceLandmarkerEngine:
         smile_threshold: float = 0.6,
         mouth_open_threshold: float = 0.4,
         # ---- pose thresholds (degrees) ----
-        yaw_threshold: float = 20,
+        yaw_threshold: float = 30,
         pitch_threshold: float = 25,
-        roll_threshold: float = 20,
+        roll_threshold: float = 25,
         # ---- image quality ----
         blur_threshold: float = envConfig.BLUR_THRESHOLD,
         min_face_size: int = envConfig.MIN_FACE_SIZE,
@@ -965,7 +965,10 @@ class FaceLandmarkerEngine:
                 print(f"[Gate] ❌ {reason}")
             return False
 
-        if analysis is None or not analysis.get("valid"):
+        if analysis is None:
+            return _reject("Invalid analysis object: None")
+
+        if not analysis.get("valid"):
             return _reject(f"Invalid analysis object: {analysis.get('reason', 'unknown')}")
 
         if debug:
@@ -1320,27 +1323,32 @@ class FaceLandmarkerEngine:
     # =========================================================================
 
     def _debug_summary(self, a: Dict):
+        def _fmt(value, default, spec):
+            if value is None:
+                value = default
+            return format(value, spec)
+
         print(
             f"[Gate] "
-            f"blur={a.get('blur', 0):.1f}  "
+            f"blur={_fmt(a.get('blur'), 0.0, '.1f')}  "
             f"size={a.get('size', 0)}px  "
-            f"yaw={a.get('yaw', 0):.1f}° pitch={a.get('pitch', 0):.1f}° roll={a.get('roll', 0):.1f}°  "
-            f"eye_score={a.get('eye_score', 0):.2f} eye_bal={a.get('eye_balance', 0):.2f}  "
+            f"yaw={_fmt(a.get('yaw'), 0.0, '.1f')}° pitch={_fmt(a.get('pitch'), 0.0, '.1f')}° roll={_fmt(a.get('roll'), 0.0, '.1f')}°  "
+            f"eye_score={_fmt(a.get('eye_score'), 0.0, '.2f')} eye_bal={_fmt(a.get('eye_balance'), 0.0, '.2f')}  "
             f"upper={a.get('upper_face_visible')} lower={a.get('lower_face_visible')}  "
-            f"occ={a.get('occlusion_score', 0):.2f} mouth_occ={a.get('mouth_occluded_score', 0):.2f}  "
-            f"expr={a.get('expression_score', 0):.2f}  "
+            f"occ={_fmt(a.get('occlusion_score'), 0.0, '.2f')} mouth_occ={_fmt(a.get('mouth_occluded_score'), 0.0, '.2f')}  "
+            f"expr={_fmt(a.get('expression_score'), 0.0, '.2f')}  "
             f"| GEO: "
-            f"w={a.get('geo_face_width_ratio', 0):.2f} h={a.get('geo_face_height_ratio', 0):.2f}  "
-            f"eye_dist={a.get('geo_eye_distance_ratio', 0):.2f}  "
-            f"L-EAR={a.get('geo_left_ear', 0):.3f} R-EAR={a.get('geo_right_ear', 0):.3f}  "
-            f"mouth_w={a.get('geo_mouth_width_ratio', 0):.2f}  "
-            f"lat_asym={a.get('geo_lateral_asymmetry', 0):.3f}  "
-            f"nose_off={a.get('geo_nose_midline_offset', 0):.3f}  "
+            f"w={_fmt(a.get('geo_face_width_ratio'), 0.0, '.2f')} h={_fmt(a.get('geo_face_height_ratio'), 0.0, '.2f')}  "
+            f"eye_dist={_fmt(a.get('geo_eye_distance_ratio'), 0.0, '.2f')}  "
+            f"L-EAR={_fmt(a.get('geo_left_ear'), 0.0, '.3f')} R-EAR={_fmt(a.get('geo_right_ear'), 0.0, '.3f')}  "
+            f"mouth_w={_fmt(a.get('geo_mouth_width_ratio'), 0.0, '.2f')}  "
+            f"lat_asym={_fmt(a.get('geo_lateral_asymmetry'), 0.0, '.3f')}  "
+            f"nose_off={_fmt(a.get('geo_nose_midline_offset'), 0.0, '.3f')}  "
             f"| IRIS: "
-            f"L-r={a.get('iris_left_radius_px', 0):.1f}px "
-            f"R-r={a.get('iris_right_radius_px', 0):.1f}px  "
-            f"L-bright={a.get('iris_left_center_brightness', 0):.1f} "
-            f"R-bright={a.get('iris_right_center_brightness', 0):.1f}"
+            f"L-r={_fmt(a.get('iris_left_radius_px'), 0.0, '.1f')}px "
+            f"R-r={_fmt(a.get('iris_right_radius_px'), 0.0, '.1f')}px  "
+            f"L-bright={_fmt(a.get('iris_left_center_brightness'), 0.0, '.1f')} "
+            f"R-bright={_fmt(a.get('iris_right_center_brightness'), 0.0, '.1f')}"
         )
 
     def _blendshape_dict(self, blendshapes):
