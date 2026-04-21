@@ -216,8 +216,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                 # cap.release()
                 # stop_event.set()
                 # break
-                cap.release()
                 stop_event.set()
+
+                reader_thread.join(timeout=2)   # wait for thread to exit safely
+
+                cap.release()
 
                 track_state.clear()
                 track_identity.clear()
@@ -310,16 +313,19 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     analysis = face_landmarker_engine.analyze(face_img)
-                    is_valid = face_landmarker_engine.is_valid_face(analysis, cam.code) 
-                    if not is_valid:
-                        # print(f"[Camera {cam.code}] Face rejected by FaceLandmarker is_valid_face check")
+                    # is_valid = face_landmarker_engine.is_valid_face(analysis, cam.code) 
+                    score = face_landmarker_engine.score_face(analysis)
+                    if score == 0:
                         continue
+                    # if not is_valid:
+                    # #     # print(f"[Camera {cam.code}] Face rejected by FaceLandmarker is_valid_face check")
+                    # #     continue
                     quality = insight_engine.compute_face_quality(f, face_img, analysis)
-
-                    if quality < 0.15:
+                    final_quality = quality * score
+                    if final_quality < 0.15:
                         continue
 
-                    f["quality"] = quality
+                    f["quality"] = final_quality
                     valid_faces.append(f)
 
                 if not valid_faces:

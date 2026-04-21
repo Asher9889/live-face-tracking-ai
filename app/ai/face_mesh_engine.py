@@ -1724,6 +1724,66 @@ class FaceLandmarkerEngine:
 
         return True
 
+
+
+    def score_face(self, a: Dict, debug=False) -> float:
+        if not a or not a.get("valid"):
+            return 0.0
+
+        # -------------------------
+        # HARD REJECT (only garbage)
+        # -------------------------
+        if a["blur"] < self.blur_threshold:
+            if debug: print(f"❌ Blur too low: {a['blur']:.2f}")
+            return 0.0
+
+        if a["size"] < self.min_face_size:
+            if debug: print(f"❌ Face too small: {a['size']}")
+            return 0.0
+
+        yaw, pitch = a.get("yaw"), a.get("pitch")
+        if yaw is None or pitch is None:
+            return 0.0
+
+        if abs(yaw) > 60 or abs(pitch) > 60:
+            # extreme pose → useless
+            if debug: print(f"❌ Extreme pose: yaw={yaw}, pitch={pitch}")
+            return 0.0
+
+        # -------------------------
+        # SOFT SCORING
+        # -------------------------
+        score = 1.0
+
+        # 🔻 Pose penalty
+        if abs(yaw) > 25:
+            score *= 0.75
+        if abs(pitch) > 30:
+            score *= 0.75
+
+        # # 🔻 Face completeness
+        # face_area = a["face_width"] * a["face_height"]
+        # if face_area < 0.10:
+        #     score *= 0.7
+        # elif face_area < 0.07:
+        #     score *= 0.5
+
+        # 🔻 Partial face (eyes missing / crop)
+        eye_ratio = a.get("eye_dist_ratio", 1.0)
+        if eye_ratio < 0.25:
+            score *= 0.7
+        if eye_ratio < 0.20:
+            score *= 0.4
+
+        # 🔻 Mild blur penalty (already passed hard threshold)
+        blur = a.get("blur", 0)
+        if blur < (self.blur_threshold * 1.5):
+            score *= 0.8
+
+        if debug:
+            print(f"✅ Face score: {score:.2f}")
+
+        return score
     # =========================================================
     # GEOMETRY
     # =========================================================
