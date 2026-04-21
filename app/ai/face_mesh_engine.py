@@ -1756,17 +1756,17 @@ class FaceLandmarkerEngine:
         score = 1.0
 
         # 🔻 Pose penalty
-        if abs(yaw) > 25:
+        if abs(yaw) > 35:
             score *= 0.75
         if abs(pitch) > 30:
             score *= 0.75
 
         # # 🔻 Face completeness
-        # face_area = a["face_width"] * a["face_height"]
-        # if face_area < 0.10:
-        #     score *= 0.7
-        # elif face_area < 0.07:
-        #     score *= 0.5
+        face_area = a["face_width"] * a["face_height"]
+        if face_area < 0.10:
+            score *= 0.7
+        elif face_area < 0.07:
+            score *= 0.5
 
         # 🔻 Partial face (eyes missing / crop)
         eye_ratio = a.get("eye_dist_ratio", 1.0)
