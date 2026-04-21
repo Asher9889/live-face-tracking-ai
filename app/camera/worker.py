@@ -6,7 +6,7 @@ from typing import List
 import random
 from enum import Enum
 import numpy as np
-from app.camera.helper import is_stable_embedding, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms
+from app.camera.helper import is_stable_embedding_global, fast_filter, is_stable_embedding, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms
 from app.camera.types import CameraConfig, TrackState
 from app.config import FRAME_RATE
 
@@ -290,6 +290,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 _, roi, offset = roi_data
 
                 faces = insight_engine.detect_and_generate_embedding(roi, offset, cam.code)
+
                 if not faces:
                     continue
 
@@ -297,16 +298,30 @@ def _camera_loop(cam: CameraConfig) -> None:
                     print(f"[Camera {cam.code}] Skipping ROI with multiple faces: {len(faces)}")
                     continue
 
+                # Filter bad faces after detetction
+                faces = [f for f in faces if fast_filter(f)]
+                if not faces:
+                    continue
+
                 # -------------------------
                 # QUALITY FILTER
                 # -------------------------
                 valid_faces = []
                 for f in faces:
-                    if f["score"] < envConfig.SCRFD_THRESHOLD:
-                        continue
+                    # if f["score"] < envConfig.SCRFD_THRESHOLD:
+                    #     continue
 
                     x1, y1, x2, y2 = map(int, f["bbox"])
                     # face_img = frame[y1:y2, x1:x2]
+
+                    embedding = f["embedding"]
+
+                    # 🔥 GLOBAL stability check (once)
+                    if not is_stable_embedding_global(track_embedding_state, person_id, embedding):
+                        print(f"[{now_ms()}][Camera {cam.code}] Unstable embedding → person_id={person_id}")
+                        continue
+
+
                     face_img = crop_with_margin(frame, x1, y1, x2, y2, margin=0.2)
 
                     if face_img.size == 0:

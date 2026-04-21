@@ -1,3 +1,6 @@
+# Optimization Flow
+- detect → 🟢 fast_filter → 🟡 stability → crop → 🔵 MediaPipe → scoring
+
 1) Detection
 2) Tracking
 3) Track state update

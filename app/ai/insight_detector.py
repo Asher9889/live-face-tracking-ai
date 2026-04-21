@@ -8,9 +8,15 @@ from app.config.config import envConfig
 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 class InsightFaceEngine:
+    """
+    det_score < 0.4  → very uncertain detection, likely false positive
+    det_score 0.4-0.6 → partial face, occluded
+    det_score > 0.6  → clean detection 
+    det_score > 0.85 → near perfect detection
+    """
 
     MIN_FACE_SIZE = envConfig.MIN_FACE_SIZE
-    MIN_SCORE = 0.55
+    MIN_SCORE = 0.60
 
     def __init__(self, det_size=(640, 640)):
         self.app = FaceAnalysis(
@@ -45,9 +51,9 @@ class InsightFaceEngine:
 
         for face in faces:
             score = float(face.det_score)
-            if score < self.MIN_SCORE:
-                # print(f"[{now}][Detect_And_Generate-Embedding] [ Camera {camera_code}] Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
-                continue
+            # if score < self.MIN_SCORE:
+            #     print(f"[{now}][Detect_And_Generate-Embedding] [ Camera {camera_code}] Skipped face due to low face score: {score}. Need at least {self.MIN_SCORE}.")
+            #     continue
 
             bbox = face.bbox.astype(np.int32)
             width = bbox[2] - bbox[0]
@@ -60,9 +66,9 @@ class InsightFaceEngine:
             # print(f"[{now}][Detect_Face_Size][Camera {camera_code}] Face size: {width}x{height}, score: {score:.2f}, pose: {face.pose}, gender:{face.gender}")
             # continue 
 
-            if min(width, height) < self.MIN_FACE_SIZE: # skip very small faces
-                # print(f"[Detect_And_Generate-Embedding][Camera {camera_code}] Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
-                continue
+            # if min(width, height) < self.MIN_FACE_SIZE: # skip very small faces
+            #     # print(f"[Detect_And_Generate-Embedding][Camera {camera_code}] Skipped face due to small size: {width}x{height}. Need at least {self.MIN_FACE_SIZE}.")
+            #     continue
 
             # Convert to global coordinates (important if ROI used)
             global_bbox = np.array([
@@ -80,6 +86,14 @@ class InsightFaceEngine:
             
             # print(f"[{now}][Detect_And_Generate-Embedding][Camera {camera_code}] Detected face with score: {score:.2f}, size: {width}x{height}, pose: (yaw={yaw:.1f}, pitch={pitch:.1f}, roll={roll:.1f}), gender: {face.gender}")
 
+            """
+            print(face.bbox)        # [x1, y1, x2, y2]
+            print(face.kps)         # 5 keypoints (x,y) pairs
+            print(face.embedding)   # 512-D ArcFace vector ← USE THIS
+            print(face.age)         # estimated age
+            print(face.gender)      # 0=female, 1=male
+            print(face.pose)        # yaw, pitch, roll ← filter bad angles
+            """
             results.append({
                 "bbox": global_bbox,
                 "score": score,

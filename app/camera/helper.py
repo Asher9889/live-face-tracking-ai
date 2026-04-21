@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from datetime import datetime
-
+from app.config import envConfig
 
 def is_blurry(frame, threshold=80):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -94,6 +94,43 @@ def is_stable_embedding(track_embedding_state, person_id, embedding, quality):
     print(f"[IsStable][Person {person_id}] accepted (sim_ref={sim_ref:.3f} sim_last={sim_last:.3f} quality={quality:.3f})")
 
     return True
+
+def is_stable_embedding_global(track_embedding_state, person_id, embedding):
+    state = track_embedding_state.get(person_id)
+
+    if state is None:
+        track_embedding_state[person_id] = {
+            "ref": embedding,
+            "last": embedding,
+        }
+        return True
+
+    ref = state["ref"]
+    last = state["last"]
+
+    sim_ref = float(np.dot(embedding, ref))
+    sim_last = float(np.dot(embedding, last))
+
+    # identity consistency
+    if sim_ref < 0.45:
+        return False
+
+    # temporal stability
+    if sim_last < 0.40:
+        return False
+
+    # update state (lightweight)
+    state["last"] = embedding
+
+    # 🔥 slow ref update (EMA instead of mean)
+    alpha = 0.1
+    new_ref = (1 - alpha) * ref + alpha * embedding
+    new_ref /= np.linalg.norm(new_ref)
+
+    state["ref"] = new_ref
+
+    return True
+
 
 def expand_bbox(bbox, frame_w, frame_h):
     x1, y1, x2, y2 = bbox
@@ -215,3 +252,37 @@ def get_pose_name(yaw: float | None) -> str | None:
 
 def now_ms():
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+def fast_filter(face):
+    # 1. detection confidence
+    if face["score"] < envConfig.SCRFD_THRESHOLD:
+        return False
+
+    # 2. face size
+    x1, y1, x2, y2 = face["bbox"]
+    w = x2 - x1
+    if w < envConfig.MIN_FACE_WIDTH:
+        return False
+
+    kps = face.get("kps")
+    if kps is None:
+        return False
+
+    # 3. yaw
+    left_eye, right_eye, nose = kps[0], kps[1], kps[2]
+    eye_center = (left_eye[0] + right_eye[0]) / 2
+    eye_width = abs(right_eye[0] - left_eye[0]) + 1e-6
+    yaw = ((nose[0] - eye_center) / eye_width) * 90
+
+    if abs(yaw) > 45:
+        return False
+
+    # 4. roll
+    dy = right_eye[1] - left_eye[1]
+    dx = right_eye[0] - left_eye[0]
+    roll = np.degrees(np.arctan2(dy, dx))
+
+    if abs(roll) > 30:
+        return False
+
+    return True
