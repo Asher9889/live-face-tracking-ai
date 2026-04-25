@@ -298,10 +298,28 @@ def _camera_loop(cam: CameraConfig) -> None:
                     print(f"[Camera {cam.code}] Skipping ROI with multiple faces: {len(faces)}")
                     continue
 
-                # Filter bad faces after detetction
-                faces = [f for f in faces if fast_filter(f)]
+                # Filter bad faces after detection and log rejection reason.
+                filtered_faces = []
+                required_min_width = envConfig.MIN_RECOGNITION_FACE_WIDTH
+                if state in (TrackState.COLLECTING_UNKNOWN, TrackState.UPDATING_UNKNOWN):
+                    required_min_width = envConfig.MIN_UNKNOWN_REG_FACE_WIDTH
+
+                for f in faces:
+                    filter_result = fast_filter(f, min_width=required_min_width)
+
+                    if isinstance(filter_result, dict) and not filter_result.get("status", False):
+                        reason = filter_result.get("reason", "unknown")
+                        details = filter_result.get("details", "")
+                        print(
+                            f"[{now_ms()}][Camera {cam.code}][Person {person_id}][FAST_FILTER] "
+                            f"reason={reason} details={details}"
+                        )
+                        continue
+
+                    filtered_faces.append(f)
+
+                faces = filtered_faces
                 if not faces:
-                    print(f"[Camera {cam.code}] No valid faces after fast_filter")
                     continue
 
                 # -------------------------
@@ -360,6 +378,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                 best_face = select_best_face(valid_faces)
                 if best_face is None:
                     continue
+
+                bx1, _, bx2, _ = map(int, best_face["bbox"])
+                best_face_width = bx2 - bx1
 
                 embedding = best_face["embedding"]
                 quality = best_face["quality"]
@@ -437,6 +458,15 @@ def _camera_loop(cam: CameraConfig) -> None:
                 # 🔵 STAGE 2: UNKNOWN
                 # =====================================================
                 elif state == TrackState.COLLECTING_UNKNOWN:
+                    if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
+                        log(
+                            cam,
+                            person_id,
+                            "UNKNOWN",
+                            f"REJECT small face width={best_face_width} < {envConfig.MIN_UNKNOWN_REG_FACE_WIDTH}"
+                        )
+                        continue
+
                     buffer = track_unknown_buffer.get(person_id, [])
 
                     # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
@@ -497,6 +527,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                 # 🔵 STAGE 3: UPDATE (FINAL OPTIMIZED)
                 # =====================================================
                 elif state == TrackState.UPDATING_UNKNOWN:
+                    if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
+                        continue
 
                     unknown_id = track_unknown_identity.get(person_id)
                     if not unknown_id:

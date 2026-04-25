@@ -21,7 +21,10 @@ class EnvConfig:
     MIN_UNKNOWN_FRAMES = 4
     MAX_UNKNOWN_FRAMES = 5
     MIN_FACE_SIZE = 60 # pixels
-    MIN_FACE_WIDTH = 60 # pixels
+    MIN_RECOGNITION_FACE_WIDTH = int(os.getenv("MIN_RECOGNITION_FACE_WIDTH", "30"))
+    MIN_UNKNOWN_REG_FACE_WIDTH = int(os.getenv("MIN_UNKNOWN_REG_FACE_WIDTH", "45"))
+    # Backward-compatible alias for older code paths.
+    MIN_FACE_WIDTH = MIN_RECOGNITION_FACE_WIDTH
     BLUR_THRESHOLD = 30
     MIN_UNKNOWN_CREATION_QUALITY = float(os.getenv("MIN_UNKNOWN_CREATION_QUALITY"))
     MIN_UNKNOWN_CREATE_FRAMES = int(os.getenv("MIN_UNKNOWN_CREATE_FRAMES", "2"))

@@ -255,12 +255,15 @@ def get_pose_name(yaw: float | None) -> str | None:
 def now_ms():
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-def fast_filter(face):
+def fast_filter(face, min_width=None):
+    if min_width is None:
+        min_width = envConfig.MIN_RECOGNITION_FACE_WIDTH
+
     # ----------------------------
     # 1. Detection confidence
     # ----------------------------
     if face["score"] < envConfig.SCRFD_THRESHOLD:
-        return False
+        return { "status": False, "reason": "low_detection_score", "details": f"score {face['score']:.3f} < {envConfig.SCRFD_THRESHOLD}" }
 
     # ----------------------------
     # 2. Face size (width check)
@@ -268,24 +271,24 @@ def fast_filter(face):
     x1, y1, x2, y2 = face["bbox"]
     w = x2 - x1
 
-    if w < envConfig.MIN_FACE_WIDTH:
-        return False
+    if w < min_width:
+        return { "status": False, "reason": "small_face", "details": f"width {w} < {min_width}" }
 
     # ----------------------------
     # 3. Pose (use model output)
     # ----------------------------
     pose = face.get("pose")
     if pose is None:
-        return False
+        return { "status": False, "reason": "no_pose", "details": "No pose information available" }
 
     yaw, pitch, roll = pose
 
     # only reject extreme angles (cheap filter)
     if abs(yaw) > 50:
-        return False
+        return { "status": False, "reason": "extreme_yaw", "details": f"yaw angle {yaw} > 50" }
 
     if abs(roll) > 35:
-        return False
+        return { "status": False, "reason": "extreme_roll", "details": f"roll angle {roll} > 35" }
 
     # ⚠️ DO NOT filter pitch here (CCTV downward angle common)
 
