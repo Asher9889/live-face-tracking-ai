@@ -23,6 +23,17 @@ class EnvConfig:
     MIN_FACE_SIZE = 60 # pixels
     MIN_FACE_WIDTH = 60 # pixels
     BLUR_THRESHOLD = 30
+    FACE_GATE_WINDOW = int(os.getenv("FACE_GATE_WINDOW", "5"))
+    MIN_WIDTH_HISTORY = int(os.getenv("MIN_WIDTH_HISTORY", "3"))
+    MIN_REGISTER_TRACKING_FRAMES = int(os.getenv("MIN_REGISTER_TRACKING_FRAMES", "3"))
+    MIN_DETECT_WIDTH = int(os.getenv("MIN_DETECT_WIDTH", "24"))
+    MIN_TRACKING_WIDTH = int(os.getenv("MIN_TRACKING_WIDTH", "36"))
+    MIN_REGISTER_WIDTH = int(os.getenv("MIN_REGISTER_WIDTH", "52"))
+    MIN_DETECT_AREA_RATIO = float(os.getenv("MIN_DETECT_AREA_RATIO", "0.0"))
+    MIN_TRACKING_AREA_RATIO = float(os.getenv("MIN_TRACKING_AREA_RATIO", "0.0"))
+    MIN_REGISTER_AREA_RATIO = float(os.getenv("MIN_REGISTER_AREA_RATIO", "0.0"))
+    MIN_TRACKING_QUALITY = float(os.getenv("MIN_TRACKING_QUALITY", "0.38"))
+    MIN_REGISTER_QUALITY = float(os.getenv("MIN_REGISTER_QUALITY", "0.55"))
     MIN_UNKNOWN_CREATION_QUALITY = float(os.getenv("MIN_UNKNOWN_CREATION_QUALITY"))
     MIN_UNKNOWN_CREATE_FRAMES = int(os.getenv("MIN_UNKNOWN_CREATE_FRAMES", "2"))
     SCRFD_THRESHOLD = float(os.getenv("SCRFD_THRESHOLD", "0.50"))

@@ -3,10 +3,9 @@ import threading
 import time
 import cv2
 from typing import List
-import random
 from enum import Enum
 import numpy as np
-from app.camera.helper import is_stable_embedding_global, fast_filter, is_stable_embedding, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms
+from app.camera.helper import is_stable_embedding_global, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms
 from app.camera.types import CameraConfig, TrackState
 from app.config import FRAME_RATE
 
@@ -16,7 +15,6 @@ from queue import Queue, Empty
 from app.ai.insight_detector import InsightFaceEngine
 from app.ai.face_mesh_engine import FaceLandmarkerEngine
 from app.camera.extract_person_roi import extract_person_roi
-from app.config.config import envConfig
 from app.events.publisher import EventPublisher
 from app.recognition import embedding_store, unknown_embedding_store
 from app.tracking.track_manager import TrackEventEmitter
@@ -24,11 +22,12 @@ from app.database import redis_client
 
 from app.camera.unique_face_builder import UniqueFaceRepresentationBuilder
 from app.camera.payload_builder import build_unknown_payload
-
-# unknown_manager = UnknownIdentityManager(unknown_embedding_store)
-
-MIN_UNKNOWN_CREATION_QUALITY = float(envConfig.MIN_UNKNOWN_CREATION_QUALITY)
-MIN_UNKNOWN_CREATE_FRAMES = int(envConfig.MIN_UNKNOWN_CREATE_FRAMES)
+from app.camera.face_gate import (
+    accept_tracking_face,
+    evaluate_detection_gate,
+    evaluate_registration_gate,
+    evaluate_tracking_gate,
+)
 
 RTSP_TRANSPORT = os.getenv("RTSP_TRANSPORT", "tcp").strip().lower()
 RTSP_TIMEOUT_US = int(os.getenv("RTSP_TIMEOUT_US", "5000000"))
@@ -144,6 +143,7 @@ def _camera_loop(cam: CameraConfig) -> None:
     track_unknown_identity = {}
     track_unknown_meta = {}
     track_embedding_state = {}
+    track_gate_state = {}
 
     # For RTSP Thread
     frame_queue = Queue(maxsize=1)
@@ -252,6 +252,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 track_unknown_identity.pop(tid, None)
                 track_unknown_meta.pop(tid, None)
                 track_embedding_state.pop(tid, None)
+                track_gate_state.pop(tid, None)
 
             for person_id, bbox in zip(ids, boxes):
 
@@ -298,10 +299,22 @@ def _camera_loop(cam: CameraConfig) -> None:
                     print(f"[Camera {cam.code}] Skipping ROI with multiple faces: {len(faces)}")
                     continue
 
-                # Filter bad faces after detetction
-                faces = [f for f in faces if fast_filter(f)]
+                detection_faces = []
+                for f in faces:
+                    detect_gate = evaluate_detection_gate(track_gate_state, person_id, f, frame.shape)
+                    if not detect_gate.passed:
+                        log(
+                            cam,
+                            person_id,
+                            "GATE_DETECT",
+                            f"REJECT {detect_gate.reason} raw_w={detect_gate.geometry.width} area={detect_gate.geometry.area_ratio:.4f}"
+                        )
+                        continue
+                    f["gate_detection"] = detect_gate
+                    detection_faces.append(f)
+
+                faces = detection_faces
                 if not faces:
-                    print(f"[Camera {cam.code}] No valid faces after fast_filter")
                     continue
 
                 # -------------------------
@@ -317,15 +330,9 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     embedding = f["embedding"]
 
-                    # 🔥 GLOBAL stability check (once per loop)
-                    if not is_stable_embedding_global(track_embedding_state, person_id, embedding):
-                        print(f"[{now_ms()}][Camera {cam.code}] Unstable embedding → person_id={person_id}")
-                        continue
-
-
                     face_img = crop_with_margin(frame, x1, y1, x2, y2, margin=0.2)
 
-                    if face_img.size == 0:
+                    if face_img is None or face_img.size == 0:
                         continue
 
                     f["face_img"] = face_img
@@ -348,9 +355,35 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     final_quality = ( 0.6 * quality + 0.4 * mp_score ) 
                     print(f"[{now_ms()}][Camera {cam.code}] Face quality → person_id={person_id}, quality={quality:.3f}, mp_score={mp_score:.3f}, final_quality={final_quality:.3f}")
-                    if final_quality < 0.35:
+                    tracking_gate = evaluate_tracking_gate(
+                        track_gate_state,
+                        person_id,
+                        f,
+                        frame.shape,
+                        final_quality
+                    )
+                    if not tracking_gate.passed:
+                        log(
+                            cam,
+                            person_id,
+                            "GATE_TRACK",
+                            f"REJECT {tracking_gate.reason} raw_w={tracking_gate.geometry.width} "
+                            f"median_w={tracking_gate.median_width:.1f} q={final_quality:.3f}"
+                        )
                         continue
 
+                    # Prevent unstable / identity-switched embeddings from entering buffers.
+                    if not is_stable_embedding_global(track_embedding_state, person_id, embedding):
+                        print(f"[{now_ms()}][Camera {cam.code}] Unstable embedding → person_id={person_id}")
+                        continue
+
+                    f["gate_tracking"] = accept_tracking_face(
+                        track_gate_state,
+                        person_id,
+                        f,
+                        frame.shape,
+                        final_quality
+                    )
                     f["quality"] = final_quality
                     valid_faces.append(f)
 
@@ -386,7 +419,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                         "quality": quality,
                         "pose_bucket": pose,
                         "img": face_img,
-                        "ts": time.time()
+                        "ts": time.time(),
+                        "gate": best_face.get("gate_tracking")
                     })
 
                     buffer = sorted(buffer, key=lambda x: x["quality"], reverse=True)[:3]
@@ -425,9 +459,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # move to unknown
                     track_state[person_id] = TrackState.COLLECTING_UNKNOWN
-                    track_unknown_buffer[person_id] = [
-                        x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
-                    ]
+                    track_unknown_buffer[person_id] = list(buffer)
                     track_known_buffer.pop(person_id, None)
 
                     log(cam, person_id, "STATE", "→ COLLECTING_UNKNOWN")
@@ -454,6 +486,23 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     best = builder.get_best_face(buffer)
                     if not best or best["img"] is None or best["img"].size == 0:
+                        continue
+
+                    register_gate = evaluate_registration_gate(
+                        track_gate_state,
+                        person_id,
+                        best,
+                        frame.shape,
+                        best["quality"]
+                    )
+                    if not register_gate.passed:
+                        log(
+                            cam,
+                            person_id,
+                            "GATE_REGISTER",
+                            f"WAIT {register_gate.reason} raw_w={register_gate.geometry.width} "
+                            f"median_w={register_gate.median_width:.1f} median_q={register_gate.median_quality or 0:.3f}"
+                        )
                         continue
 
                     ok, buf = cv2.imencode(".jpg", best["img"])
@@ -510,6 +559,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     centroid = builder.build(buffer)
+                    if centroid is None:
+                        continue
 
                     meta = track_unknown_meta.get(person_id, {
                         "pose_best": {},
@@ -522,6 +573,27 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     # cooldown
                     if time.time() - meta["last_update"] < 2:
+                        continue
+
+                    best = builder.get_best_face(buffer)
+                    if not best:
+                        continue
+
+                    register_gate = evaluate_registration_gate(
+                        track_gate_state,
+                        person_id,
+                        best,
+                        frame.shape,
+                        best["quality"]
+                    )
+                    if not register_gate.passed:
+                        log(
+                            cam,
+                            person_id,
+                            "GATE_REGISTER",
+                            f"WAIT {register_gate.reason} raw_w={register_gate.geometry.width} "
+                            f"median_w={register_gate.median_width:.1f} median_q={register_gate.median_quality or 0:.3f}"
+                        )
                         continue
 
                     # =====================================================
