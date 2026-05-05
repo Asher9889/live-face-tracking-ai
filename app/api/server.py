@@ -7,12 +7,23 @@ import time
 import requests
 
 from app.recognition import embedding_store, unknown_embedding_store
+from app.recognition.refresh_service import embedding_refresh_service
 from app.ai.insight_detector import InsightFaceEngine
 
 app = FastAPI()
 insight_engine = InsightFaceEngine()
 
 lock = threading.Lock()
+
+
+@app.on_event("startup")
+def start_embedding_refresh_loop():
+    embedding_refresh_service.start()
+
+
+@app.on_event("shutdown")
+def stop_embedding_refresh_loop():
+    embedding_refresh_service.stop()
 
 from pydantic import BaseModel, Field
 from typing import List

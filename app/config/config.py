@@ -16,6 +16,7 @@ class EnvConfig:
     NODE_CREATE_UNKNOWN_URL = os.getenv("NODE_CREATE_UNKNOWN_URL")
     NODE_UPDATE_UNKNOWN_URL = os.getenv("NODE_UPDATE_UNKNOWN_URL")
     CAMERA_API_URL = os.getenv("CAMERA_API_URL")
+    EMBEDDINGS_REFRESH_INTERVAL_SEC = int(os.getenv("EMBEDDINGS_REFRESH_INTERVAL_SEC", "300"))
     # Global override: when true, force using local webcam instead of RTSP streams
     USE_WEBCAM = os.getenv("USE_WEBCAM", "false").lower() in ("1", "true", "yes")
     MIN_UNKNOWN_FRAMES = 4

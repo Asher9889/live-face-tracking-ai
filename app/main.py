@@ -3,6 +3,7 @@ import threading
 from app.api.run_server import start_api
 from app.camera import fetch_cameras, start_camera_threads
 from app.recognition import embedding_store, unknown_embedding_store
+from app.recognition.refresh_service import embedding_refresh_service
 from app.api.server import wait_for_api
 
 def main():
@@ -16,6 +17,7 @@ def main():
         # Loading all embeddings first
         embedding_store.load_embeddings()
         unknown_embedding_store.load_unknown_embeddings()
+        embedding_refresh_service.start()
      
         # Starting camera workers
         cameras = fetch_cameras()

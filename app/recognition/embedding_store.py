@@ -1,7 +1,16 @@
+from dataclasses import dataclass
+
 import numpy as np
 import requests
 
 from app.config.config import envConfig
+
+
+@dataclass
+class EmbeddingStoreData:
+    employee_ids: list
+    employee_names: list
+    embeddings: np.ndarray | None
 
 
 class EmbeddingStore:
@@ -9,16 +18,20 @@ class EmbeddingStore:
 
     def __init__(self, api_url: str):
         self.api_url = api_url
-        self.employee_ids = []
-        self.employee_names = []
-        self.embeddings = None  # numpy matrix (N x 512)
+        self._store = EmbeddingStoreData(
+            employee_ids=[],
+            employee_names=[],
+            embeddings=None,
+        )
 
     def load_embeddings(self):
         print("[AI] Loading employee embeddings...")
 
         response = requests.get(self.api_url, headers={
             "Authorization": f"Bearer {envConfig.TOKEN_TO_ACCESS_NODE_API}"
-        })
+        }, timeout=5)
+
+        response.raise_for_status()
 
         data = response.json()
         if not data.get("success"):
@@ -28,9 +41,17 @@ class EmbeddingStore:
 
 
         if len(employees) < 1:
+            self._store = EmbeddingStoreData(
+                employee_ids=[],
+                employee_names=[],
+                embeddings=None,
+            )
+
             print("[AI] ⚠️ No employees found → running in UNKNOWN-ONLY mode")
             return
 
+        employee_ids = []
+        employee_names = []
         vectors = []
 
         for emp in employees:
@@ -40,27 +61,33 @@ class EmbeddingStore:
             # normalize (safety)
             mean_embedding = mean_embedding / np.linalg.norm(mean_embedding)
 
-            self.employee_ids.append(emp["id"])
-            self.employee_names.append(emp["name"])
+            employee_ids.append(emp["id"])
+            employee_names.append(emp["name"])
             vectors.append(mean_embedding)
 
-        self.embeddings = np.stack(vectors)
+        self._store = EmbeddingStoreData(
+            employee_ids=employee_ids,
+            employee_names=employee_names,
+            embeddings=np.stack(vectors),
+        )
 
-        print(f"[AI] Loaded {len(self.employee_ids)} employee embeddings")
+        print(f"[AI] Loaded {len(employee_ids)} employee embeddings")
 
     def find_match(self, embedding, threshold=0.45):
         """
         Returns best matching employee
         """
 
-        if self.embeddings is None:
+        store = self._store
+
+        if store.embeddings is None:
             return None
 
         # ensure normalized
         # embedding = embedding / np.linalg.norm(embedding) # no need to normalize already getting normalized values
 
         # cosine similarity
-        scores = np.dot(self.embeddings, embedding)
+        scores = np.dot(store.embeddings, embedding)
 
         best_idx = np.argmax(scores) # returns index of the largest value of similaity score
         best_score = scores[best_idx]
@@ -71,8 +98,8 @@ class EmbeddingStore:
             return None
         print(f"[AI] Best match score above threshold: {best_score}")
         return {
-            "employee_id": self.employee_ids[best_idx],
-            "name": self.employee_names[best_idx],
+            "employee_id": store.employee_ids[best_idx],
+            "name": store.employee_names[best_idx],
             "similarity": float(best_score)
         }
 
