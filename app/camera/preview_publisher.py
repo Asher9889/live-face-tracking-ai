@@ -38,6 +38,26 @@ except Exception as exc:  # pragma: no cover - depends on install
     rtc = None
 
 
+_SEQ_LOCK = threading.Lock()
+_LAST_SEQ = 0
+
+
+def _next_seq() -> int:
+    """
+    Process-wide monotonic frame counter.
+
+    A publisher is created per RTSP connection, so a per-instance counter would
+    restart at 1 on every reconnect. The browser drops any message whose seq is
+    not greater than the last one it accepted, so a reset counter makes it
+    discard the entire new session and freeze on its last accepted frame. The
+    counter has to outlive any single publisher.
+    """
+    global _LAST_SEQ
+    with _SEQ_LOCK:
+        _LAST_SEQ += 1
+        return _LAST_SEQ
+
+
 def build_frame_state(
     cam_code,
     seq,
@@ -121,7 +141,6 @@ class PreviewPublisher:
 
         self._lock = threading.Lock()
         self._pending = None
-        self._seq = 0
         self._stop = threading.Event()
 
         self._loop = None
@@ -171,11 +190,10 @@ class PreviewPublisher:
         if self._stop.is_set() or frame_bgr is None:
             return
 
-        self._seq += 1
         item = {
             "frame": frame_bgr,
             "capture_ts_ms": capture_ts_ms,
-            "seq": self._seq,
+            "seq": _next_seq(),
             "source_w": source_w,
             "source_h": source_h,
             "tracks": tracks,
