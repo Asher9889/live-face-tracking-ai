@@ -1845,6 +1845,7 @@ from mediapipe.tasks.python.vision import (
     RunningMode,
 )
 from app.config.config import envConfig
+from app.ai.runtime_device import resolve_mediapipe_delegate
 
 
 # ---------------- LANDMARK INDEX ---------------- #
@@ -1868,15 +1869,35 @@ class FaceLandmarkerEngine:
         self.min_face_size = min_face_size
         self.upscale_to = upscale_to
 
+        self.delegate = None
+        self.landmarker = None
+
+        # MediaPipe raises at create_from_options() when the GPU delegate cannot be
+        # initialised; it does not fall back on its own. Try GPU, then CPU, and
+        # record which one actually loaded.
+        delegate = resolve_mediapipe_delegate()
+        if delegate == "gpu":
+            try:
+                self.landmarker = self._create(model_path, BaseOptions.Delegate.GPU)
+                self.delegate = "GPU"
+                print(f"[AI] FaceLandmarker Ready (delegate=GPU)")
+            except Exception as exc:
+                print(f"[AI] FaceLandmarker GPU delegate unavailable ({exc}); falling back to CPU")
+
+        if self.landmarker is None:
+            self.landmarker = self._create(model_path, BaseOptions.Delegate.CPU)
+            self.delegate = "CPU"
+            print(f"[AI] FaceLandmarker Ready (delegate=CPU)")
+
+    def _create(self, model_path: str, delegate):
         options = FaceLandmarkerOptions(
-            base_options=BaseOptions(model_asset_path=model_path),
+            base_options=BaseOptions(model_asset_path=model_path, delegate=delegate),
             running_mode=RunningMode.IMAGE,
             output_face_blendshapes=False,
             output_facial_transformation_matrixes=True,
             num_faces=1,
         )
-
-        self.landmarker = FaceLandmarker.create_from_options(options)
+        return FaceLandmarker.create_from_options(options)
 
     # =========================================================
     # ANALYZE (PURE SIGNAL EXTRACTION)

@@ -4,6 +4,7 @@ import cv2
 from datetime import datetime
 
 from app.config.config import envConfig
+from app.ai.runtime_device import resolve_onnx_providers
 
 now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -19,13 +20,23 @@ class InsightFaceEngine:
     MIN_SCORE = 0.60
 
     def __init__(self, det_size=(640, 640)):
+        # GPU-first with CPU fallback. The resolved list reflects what onnxruntime
+        # can actually serve, not what we merely asked for.
+        self.providers = resolve_onnx_providers()
+        self.ctx_id = 0
+
         self.app = FaceAnalysis(
             name="buffalo_l",
-            providers=["CUDAExecutionProvider"]
+            providers=self.providers
         )
 
-        self.app.prepare(ctx_id=0, det_size=det_size) # ctx_id=0 means use first GPU 
-        print("[AI] InsightFace Engine Ready (GPU Enabled)")
+        self.app.prepare(ctx_id=self.ctx_id, det_size=det_size)
+
+        active = ",".join(self.app.models.keys()) if hasattr(self.app, "models") else "?"
+        print(
+            f"[AI] InsightFace Engine Ready "
+            f"(providers={self.providers}, ctx_id={self.ctx_id}, models={active})"
+        )
 
     def detect_and_generate_embedding(self, frame: np.ndarray, offset=(0, 0), camera_code=None):
         """

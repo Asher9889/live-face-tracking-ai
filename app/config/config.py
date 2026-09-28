@@ -6,6 +6,27 @@ load_dotenv()
 FRAME_RATE = os.getenv("FRAME_RATE", "15")
 
 class EnvConfig:
+    # Device selection: "auto" (GPU when present), "cuda" (require GPU), "cpu"
+    DEVICE = os.getenv("DEVICE", "auto").strip().lower()
+
+    # ---------------- LiveKit (preview stream) ----------------
+    # Secrets live in .env only. Never commit LIVEKIT_API_SECRET.
+    LIVEKIT_URL = os.getenv("LIVEKIT_URL", "")
+    LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "")
+    LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
+
+    # ---------------- Preview publishing ----------------
+    PREVIEW_ENABLED = os.getenv("PREVIEW_ENABLED", "false").lower() in ("1", "true", "yes")
+    # Long edge of the published frame. Height follows source aspect ratio.
+    PREVIEW_WIDTH = int(os.getenv("PREVIEW_WIDTH", "640"))
+    PREVIEW_QUALITY = int(os.getenv("PREVIEW_QUALITY", "60"))
+    # Cap on published frames per second per camera.
+    PREVIEW_FPS = int(os.getenv("PREVIEW_FPS", "15"))
+    # "auto" = NVENC when a CUDA device is present, else libx264.
+    PREVIEW_ENCODER = os.getenv("PREVIEW_ENCODER", "auto").strip().lower()
+    # Preset for the software encoder. "ultrafast" trades size for CPU time.
+    PREVIEW_X264_PRESET = os.getenv("PREVIEW_X264_PRESET", "ultrafast")
+
     REDIS_HOST = os.getenv("REDIS_HOST")
     REDIS_PORT = int(os.getenv("REDIS_PORT"))
     REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")

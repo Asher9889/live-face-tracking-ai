@@ -10,13 +10,16 @@ import numpy as np
 from app.camera.helper import is_stable_embedding_global, fast_filter, is_stable_embedding, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms, assign_face_to_person
 from app.camera.types import CameraConfig, TrackState
 from app.config import FRAME_RATE
+from app.config.config import envConfig
 
 from ultralytics import YOLO
 from queue import Queue, Empty
 
 from app.ai.insight_detector import InsightFaceEngine
 from app.ai.face_mesh_engine import FaceLandmarkerEngine
+from app.ai.runtime_device import resolve_torch_device, log_summary as log_device_summary
 from app.camera.extract_person_roi import extract_person_roi
+from app.camera.preview_publisher import PreviewPublisher
 from app.config.config import envConfig
 from app.events.publisher import EventPublisher
 from app.recognition import embedding_store, unknown_embedding_store
@@ -37,6 +40,13 @@ ROI_PAD_Y = int(os.getenv("ROI_PAD_Y", "20"))
 # Required lead of the winning face over the runner-up. Above 0 the scene is
 # genuinely ambiguous and this frame is dropped rather than risk a wrong match.
 FACE_OWNERSHIP_MARGIN = float(os.getenv("FACE_OWNERSHIP_MARGIN", "0.06"))
+
+# How many unlabelled tracks may enter the face pipeline on a single frame.
+# The expensive work is rotated round-robin across frames so per-frame cost stays
+# bounded and the preview path is never held up. 0 disables the limit.
+RECOGNIZE_TRACKS_PER_FRAME = int(os.getenv("RECOGNIZE_TRACKS_PER_FRAME", "2"))
+
+PREVIEW_ENABLED = envConfig.PREVIEW_ENABLED
 
 RTSP_TRANSPORT = os.getenv("RTSP_TRANSPORT", "tcp").strip().lower()
 RTSP_TIMEOUT_US = int(os.getenv("RTSP_TIMEOUT_US", "5000000"))
@@ -78,10 +88,14 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 path = os.path.join(BASE_DIR,"../../models/facemesh/face_landmarker.task")
 path = os.path.abspath(path)
 
-model = YOLO("yolov8n.pt")   
+# Explicit device: ultralytics would otherwise auto-select and this is shared by
+# every camera thread, so the choice has to be visible at startup.
+YOLO_DEVICE = resolve_torch_device()
+model = YOLO("yolov8n.pt")
 insight_engine = InsightFaceEngine()
 publisher = EventPublisher(redis_client)
-face_landmarker_engine = FaceLandmarkerEngine(model_path=path)  
+face_landmarker_engine = FaceLandmarkerEngine(model_path=path)
+log_device_summary()
 
 class CameraState(str, Enum):
     CONNECTING = "CONNECTING"
@@ -193,7 +207,8 @@ def _camera_loop(cam: CameraConfig) -> None:
     frame_count = 0
     frame_errors = 0
 
-
+    # Rotating cursor for round-robin face-pipeline scheduling.
+    recognize_cursor = 0
 
     def _reader(cap):
         while not stop_event.is_set():
@@ -208,7 +223,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                 except:
                     pass
 
-            frame_queue.put(frame)
+            # Stamp at decode, before any inference. Everything downstream derives
+            # its latency from this value, so it must not be taken later.
+            frame_queue.put((frame, time.time()))
 
 
     while True:
@@ -232,6 +249,15 @@ def _camera_loop(cam: CameraConfig) -> None:
 
         backoff = CAPTURE_BACKOFF_INITIAL
 
+        # One LiveKit session per capture connection. Created here (not above) so a
+        # reconnect tears the old session down and starts a fresh one.
+        preview = None
+        if PREVIEW_ENABLED:
+            preview = PreviewPublisher(cam.code)
+            if not preview.start():
+                print(f"[Camera] {cam.code}: preview publishing disabled")
+                preview = None
+
         # last_processed = 0.0
 
         while True:
@@ -251,7 +277,7 @@ def _camera_loop(cam: CameraConfig) -> None:
             # last_processed = now
 
             try:
-                frame = frame_queue.get(timeout=5)
+                frame, captured_at = frame_queue.get(timeout=5)
                 if frame is None or frame.size == 0:
                     continue
             except Empty:
@@ -264,6 +290,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                 reader_thread.join(timeout=2)   # wait for thread to exit safely
 
                 cap.release()
+
+                # Tear the LiveKit session down so a reconnect starts clean rather
+                # than leaving a stale published track behind.
+                if preview is not None:
+                    preview.stop()
 
                 track_state.clear()
                 track_identity.clear()
@@ -278,7 +309,14 @@ def _camera_loop(cam: CameraConfig) -> None:
             try:
                 frame_h, frame_w = frame.shape[:2]
 
-                results = model.track(frame, persist=True, classes=[0], conf=0.25, verbose=False)
+                results = model.track(
+                    frame,
+                    persist=True,
+                    classes=[0],
+                    conf=0.25,
+                    verbose=False,
+                    device=YOLO_DEVICE,
+                )
 
                 if results[0].boxes.id is None:
                     continue
@@ -297,6 +335,72 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_unknown_meta.pop(tid, None)
                     track_embedding_state.pop(tid, None)
 
+                # ---------------------------------------------------------------
+                # PREVIEW PUBLISH — every frame, cheap, before the face pipeline.
+                #
+                # The label attached here is whatever recognition resolved on an
+                # earlier frame. That is intentional: identity is track state, not
+                # per-frame work, and publishing before the expensive stage keeps
+                # preview latency independent of recognition cost.
+                # ---------------------------------------------------------------
+                if preview is not None:
+                    preview_tracks = []
+                    for pid, bbox in zip(ids, boxes):
+                        pid = int(pid)
+                        label = None
+                        confidence = 0.0
+                        if pid in track_identity:
+                            label = track_identity[pid]
+                            confidence = 1.0
+                        elif pid in track_unknown_identity:
+                            label = track_unknown_identity[pid]
+                            confidence = 0.9
+
+                        raw_state = track_state.get(pid)
+                        preview_tracks.append(
+                            {
+                                "track_id": pid,
+                                "bbox": [float(x) for x in bbox],
+                                "state": raw_state.value if raw_state is not None else None,
+                                "label": label,
+                                "label_confidence": confidence,
+                                # Automatic re-verification is not implemented yet;
+                                # labels persist for the life of the track.
+                                "label_expires_at": None,
+                            }
+                        )
+
+                    preview.submit(
+                        frame_bgr=frame,
+                        capture_ts_ms=int(captured_at * 1000),
+                        source_w=frame_w,
+                        source_h=frame_h,
+                        tracks=preview_tracks,
+                    )
+
+                # ---------------------------------------------------------------
+                # FACE PIPELINE SCHEDULING
+                #
+                # Only unlabelled tracks need the expensive path, and only a few of
+                # them per frame. Work rotates round-robin so every track is serviced
+                # regularly while per-frame cost stays bounded.
+                # ---------------------------------------------------------------
+                eligible = [
+                    (int(pid), bbox)
+                    for pid, bbox in zip(ids, boxes)
+                    if int(pid) not in track_identity
+                ]
+
+                if eligible and RECOGNIZE_TRACKS_PER_FRAME > 0 and len(eligible) > RECOGNIZE_TRACKS_PER_FRAME:
+                    start = recognize_cursor % len(eligible)
+                    process_ids = {
+                        eligible[(start + i) % len(eligible)][0]
+                        for i in range(RECOGNIZE_TRACKS_PER_FRAME)
+                    }
+                    recognize_cursor = (start + RECOGNIZE_TRACKS_PER_FRAME) % len(eligible)
+                else:
+                    process_ids = {pid for pid, _ in eligible}
+
                 for person_id, bbox in zip(ids, boxes):
 
                     person_id = int(person_id)
@@ -306,12 +410,12 @@ def _camera_loop(cam: CameraConfig) -> None:
                         cam.code,
                         person_id,
                         bbox,
-                        int(time.time() * 1000),
+                        int(captured_at * 1000),
                         frame_w,
                         frame_h
                     )
 
-                    if person_id in track_identity:
+                    if person_id not in process_ids:
                         continue
 
                     if person_id not in track_state:
