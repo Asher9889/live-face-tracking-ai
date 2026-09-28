@@ -8,7 +8,7 @@ ALLOWED_EVENTS = {
     "unknown_entered",
     "unknown_exited",
     "face_detected",     
-    "recognition_pending", 
+    # "recognition_pending", 
 }
 
 # Events that use streams for persistence/history

@@ -6,7 +6,7 @@ from typing import List
 import random
 from enum import Enum
 import numpy as np
-from app.camera.helper import is_stable_embedding_global, fast_filter, is_stable_embedding, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms
+from app.camera.helper import is_stable_embedding_global, fast_filter, is_stable_embedding, expand_bbox, select_best_face, crop_with_margin, get_pose_name, now_ms, assign_face_to_person
 from app.camera.types import CameraConfig, TrackState
 from app.config import FRAME_RATE
 
@@ -29,6 +29,13 @@ from app.camera.payload_builder import build_unknown_payload
 
 MIN_UNKNOWN_CREATION_QUALITY = float(envConfig.MIN_UNKNOWN_CREATION_QUALITY)
 MIN_UNKNOWN_CREATE_FRAMES = int(envConfig.MIN_UNKNOWN_CREATE_FRAMES)
+
+# Group-safety tuning: how far a person ROI may grow past the tracked body box.
+ROI_PAD_X = int(os.getenv("ROI_PAD_X", "8"))
+ROI_PAD_Y = int(os.getenv("ROI_PAD_Y", "20"))
+# Required lead of the winning face over the runner-up. Above 0 the scene is
+# genuinely ambiguous and this frame is dropped rather than risk a wrong match.
+FACE_OWNERSHIP_MARGIN = float(os.getenv("FACE_OWNERSHIP_MARGIN", "0.06"))
 
 RTSP_TRANSPORT = os.getenv("RTSP_TRANSPORT", "tcp").strip().lower()
 RTSP_TIMEOUT_US = int(os.getenv("RTSP_TIMEOUT_US", "5000000"))
@@ -83,6 +90,40 @@ class CameraState(str, Enum):
 
 def log(cam, person_id, stage, msg):
     print(f"[{now_ms()}][Camera {cam.code}][Person {person_id}][{stage}] {msg}")
+
+
+def pick_track_face(faces, person_bbox, cam, person_id):
+    """
+    Reduce a multi-face person ROI to the single face owned by this track.
+
+    person_bbox must be the TIGHT YOLO box, not the expanded ROI, otherwise a
+    neighbour's face looks equally central and the choice becomes a coin flip.
+    """
+
+    best, best_score, second_score = assign_face_to_person(faces, person_bbox)
+
+    if best is None:
+        log(cam, person_id, "OWNERSHIP", f"no face belongs to this track (candidates={len(faces)})")
+        return []
+
+    if second_score > 0 and (best_score - second_score) < FACE_OWNERSHIP_MARGIN:
+        log(
+            cam,
+            person_id,
+            "OWNERSHIP",
+            f"ambiguous best={best_score:.3f} second={second_score:.3f}",
+        )
+        return []
+
+    if len(faces) > 1:
+        log(
+            cam,
+            person_id,
+            "OWNERSHIP",
+            f"picked from {len(faces)} faces (score={best_score:.3f}, next={second_score:.3f})",
+        )
+
+    return [best]
 
 
 def _open_capture(rtsp_url: str):
@@ -283,7 +324,15 @@ def _camera_loop(cam: CameraConfig) -> None:
                 # ROI + FACE DETECTION
                 # -------------------------
                 x1, y1, x2, y2 = expand_bbox(bbox, frame_w, frame_h)
-                roi_data = extract_person_roi(frame, person_id, np.array([x1, y1, x2, y2]))
+
+                # Clamp the horizontal pad so a standing neighbour's face cannot
+                # enter this track's ROI. Vertical pad keeps head room.
+                pad_x = min(ROI_PAD_X, (x2 - x1) * 0.06)
+                pad_y = min(ROI_PAD_Y, (y2 - y1) * 0.08)
+
+                roi_data = extract_person_roi(
+                    frame, person_id, np.array([x1, y1, x2, y2]), pad_x=pad_x, pad_y=pad_y
+                )
                 if roi_data is None:
                     continue
 
@@ -295,8 +344,12 @@ def _camera_loop(cam: CameraConfig) -> None:
                     continue
 
                 if len(faces) > 1:
-                    print(f"[Camera {cam.code}] Skipping ROI with multiple faces: {len(faces)}")
-                    continue
+                    # Keep only the face owned by THIS track. Discarding the whole
+                    # ROI used to make two neighbours veto each other, so the entire
+                    # cluster went unrecognised for as long as they stood together.
+                    faces = pick_track_face(faces, bbox, cam, person_id)
+                    if not faces:
+                        continue
 
                 # Filter bad faces after detection and log rejection reason.
                 filtered_faces = []

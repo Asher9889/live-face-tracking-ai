@@ -207,6 +207,62 @@ def select_best_face(faces_with_quality):
 
 
 
+def assign_face_to_person(faces, person_bbox, margin=0.06):
+    """
+    Pick the face that belongs to a specific person track.
+
+    A person ROI contains several faces when people stand together. Choosing by
+    quality alone can hand a track its neighbour's face, so ownership is decided
+    geometrically against the TIGHT person box (never the expanded ROI).
+
+    Returns (best_face, best_score, second_score).
+    """
+
+    if not faces:
+        return None, 0.0, 0.0
+
+    px1, py1, px2, py2 = person_bbox
+    pw = max(px2 - px1, 1.0)
+    ph = max(py2 - py1, 1.0)
+
+    scored = []
+
+    for f in faces:
+        fx1, fy1, fx2, fy2 = f["bbox"]
+        fw = max(fx2 - fx1, 1.0)
+
+        cx = (fx1 + fx2) / 2.0
+        cy = (fy1 + fy2) / 2.0
+
+        hx = (cx - px1) / pw
+        if hx < -margin or hx > 1.0 + margin:
+            continue
+
+        vy = (cy - py1) / ph
+        if vy < -0.05 or vy > 0.55:
+            continue
+
+        h_score = 1.0 - min(abs(hx - 0.5) * 2.0, 1.0)
+        v_score = max(1.0 - abs(vy - 0.15) / 0.40, 0.0)
+
+        # a face cannot be meaningfully wider than the body that owns it
+        ratio = 1.0 if fw <= pw * 1.15 else (pw * 1.15) / fw
+
+        det = min(float(f.get("score", 0.0)), 1.0)
+
+        score = h_score * 0.45 + v_score * 0.30 + ratio * 0.10 + det * 0.15
+        scored.append((score, f))
+
+    if not scored:
+        return None, 0.0, 0.0
+
+    scored.sort(key=lambda t: t[0], reverse=True)
+    best_score, best = scored[0]
+    second_score = scored[1][0] if len(scored) > 1 else 0.0
+
+    return best, best_score, second_score
+
+
 def crop_with_margin(frame, x1, y1, x2, y2, margin=0.2):
     h, w = frame.shape[:2]
 
