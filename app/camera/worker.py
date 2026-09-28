@@ -195,6 +195,9 @@ def _camera_loop(cam: CameraConfig) -> None:
 
     track_state = {}
     track_identity = {}
+    # Display name for the preview overlay. track_identity stays the employee id
+    # because that is what attendance events are keyed on.
+    track_identity_name = {}
     track_known_buffer = {}
     track_unknown_buffer = {}
     track_unknown_identity = {}
@@ -298,6 +301,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                 track_state.clear()
                 track_identity.clear()
+                track_identity_name.clear()
                 track_known_buffer.clear()
                 track_unknown_buffer.clear()
                 track_unknown_identity.clear()
@@ -329,6 +333,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 for tid in lost:
                     track_state.pop(tid, None)
                     track_identity.pop(tid, None)
+                    track_identity_name.pop(tid, None)
                     track_known_buffer.pop(tid, None)
                     track_unknown_buffer.pop(tid, None)
                     track_unknown_identity.pop(tid, None)
@@ -348,12 +353,17 @@ def _camera_loop(cam: CameraConfig) -> None:
                     for pid, bbox in zip(ids, boxes):
                         pid = int(pid)
                         label = None
+                        label_name = None
                         confidence = 0.0
                         if pid in track_identity:
                             label = track_identity[pid]
+                            label_name = track_identity_name.get(pid) or str(label)
                             confidence = 1.0
                         elif pid in track_unknown_identity:
                             label = track_unknown_identity[pid]
+                            # Unidentified people have no name, and the synthetic
+                            # uuid is meaningless to read, so show a plain label.
+                            label_name = "Unknown"
                             confidence = 0.9
 
                         raw_state = track_state.get(pid)
@@ -363,6 +373,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 "bbox": [float(x) for x in bbox],
                                 "state": raw_state.value if raw_state is not None else None,
                                 "label": label,
+                                "label_name": label_name,
                                 "label_confidence": confidence,
                                 # Automatic re-verification is not implemented yet;
                                 # labels persist for the life of the track.
@@ -591,6 +602,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                         if match:
                             track_identity[person_id] = match["employee_id"]
+                            track_identity_name[person_id] = match["name"]
                             track_state[person_id] = TrackState.MATCHED_KNOWN
 
                             track_event_emitter.recognition_confirmed(

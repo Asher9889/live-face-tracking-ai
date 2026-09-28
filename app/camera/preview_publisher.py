@@ -74,6 +74,7 @@ def build_frame_state(
                 ],
                 "state": t.get("state"),
                 "label": t.get("label"),
+                "label_name": t.get("label_name"),
                 "label_confidence": t.get("label_confidence"),
                 "label_expires_at": t.get("label_expires_at"),
             }
