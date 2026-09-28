@@ -1,6 +1,7 @@
 import os
 import threading
 import time
+import traceback
 import cv2
 from typing import List
 import random
@@ -190,6 +191,7 @@ def _camera_loop(cam: CameraConfig) -> None:
     frame_queue = Queue(maxsize=1)
     stop_event = threading.Event()
     frame_count = 0
+    frame_errors = 0
 
 
 
@@ -273,474 +275,481 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                 break
 
-            frame_h, frame_w = frame.shape[:2]
+            try:
+                frame_h, frame_w = frame.shape[:2]
 
-            results = model.track(frame, persist=True, classes=[0], conf=0.25, verbose=False)
+                results = model.track(frame, persist=True, classes=[0], conf=0.25, verbose=False)
 
-            if results[0].boxes.id is None:
-                continue
-
-            boxes = results[0].boxes.xyxy.cpu().numpy()
-            ids = results[0].boxes.id.int().cpu().numpy()
-
-            lost = track_event_emitter.cleanup_lost_tracks(cam.code, ids.tolist())
-
-            for tid in lost:
-                track_state.pop(tid, None)
-                track_identity.pop(tid, None)
-                track_known_buffer.pop(tid, None)
-                track_unknown_buffer.pop(tid, None)
-                track_unknown_identity.pop(tid, None)
-                track_unknown_meta.pop(tid, None)
-                track_embedding_state.pop(tid, None)
-
-            for person_id, bbox in zip(ids, boxes):
-
-                person_id = int(person_id)
-
-                # Keep track lifecycle state updated so emit-once events are not dropped.
-                track_event_emitter.update_track(
-                    cam.code,
-                    person_id,
-                    bbox,
-                    int(time.time() * 1000),
-                    frame_w,
-                    frame_h
-                )
-
-                if person_id in track_identity:
+                if results[0].boxes.id is None:
                     continue
 
-                if person_id not in track_state:
-                    track_state[person_id] = TrackState.COLLECTING_KNOWN
-                    log(cam, person_id, "STATE", "INIT → COLLECTING_KNOWN")
-                # else:
-                #     # 🔥 IMPORTANT DEBUG
-                #     log(cam, person_id, "DEBUG", f"EXISTING STATE → {track_state[person_id]}")
+                boxes = results[0].boxes.xyxy.cpu().numpy()
+                ids = results[0].boxes.id.int().cpu().numpy()
 
-                state = track_state[person_id]
+                lost = track_event_emitter.cleanup_lost_tracks(cam.code, ids.tolist())
 
-                # -------------------------
-                # ROI + FACE DETECTION
-                # -------------------------
-                x1, y1, x2, y2 = expand_bbox(bbox, frame_w, frame_h)
+                for tid in lost:
+                    track_state.pop(tid, None)
+                    track_identity.pop(tid, None)
+                    track_known_buffer.pop(tid, None)
+                    track_unknown_buffer.pop(tid, None)
+                    track_unknown_identity.pop(tid, None)
+                    track_unknown_meta.pop(tid, None)
+                    track_embedding_state.pop(tid, None)
 
-                # Clamp the horizontal pad so a standing neighbour's face cannot
-                # enter this track's ROI. Vertical pad keeps head room.
-                pad_x = min(ROI_PAD_X, (x2 - x1) * 0.06)
-                pad_y = min(ROI_PAD_Y, (y2 - y1) * 0.08)
+                for person_id, bbox in zip(ids, boxes):
 
-                roi_data = extract_person_roi(
-                    frame, person_id, np.array([x1, y1, x2, y2]), pad_x=pad_x, pad_y=pad_y
-                )
-                if roi_data is None:
-                    continue
+                    person_id = int(person_id)
 
-                _, roi, offset = roi_data
+                    # Keep track lifecycle state updated so emit-once events are not dropped.
+                    track_event_emitter.update_track(
+                        cam.code,
+                        person_id,
+                        bbox,
+                        int(time.time() * 1000),
+                        frame_w,
+                        frame_h
+                    )
 
-                faces = insight_engine.detect_and_generate_embedding(roi, offset, cam.code)
+                    if person_id in track_identity:
+                        continue
 
-                if not faces:
-                    continue
+                    if person_id not in track_state:
+                        track_state[person_id] = TrackState.COLLECTING_KNOWN
+                        log(cam, person_id, "STATE", "INIT → COLLECTING_KNOWN")
+                    # else:
+                    #     # 🔥 IMPORTANT DEBUG
+                    #     log(cam, person_id, "DEBUG", f"EXISTING STATE → {track_state[person_id]}")
 
-                if len(faces) > 1:
-                    # Keep only the face owned by THIS track. Discarding the whole
-                    # ROI used to make two neighbours veto each other, so the entire
-                    # cluster went unrecognised for as long as they stood together.
-                    faces = pick_track_face(faces, bbox, cam, person_id)
+                    state = track_state[person_id]
+
+                    # -------------------------
+                    # ROI + FACE DETECTION
+                    # -------------------------
+                    x1, y1, x2, y2 = expand_bbox(bbox, frame_w, frame_h)
+
+                    # Clamp the horizontal pad so a standing neighbour's face cannot
+                    # enter this track's ROI. Vertical pad keeps head room.
+                    pad_x = min(ROI_PAD_X, (x2 - x1) * 0.06)
+                    pad_y = min(ROI_PAD_Y, (y2 - y1) * 0.08)
+
+                    roi_data = extract_person_roi(
+                        frame, person_id, np.array([x1, y1, x2, y2]), pad_x=pad_x, pad_y=pad_y
+                    )
+                    if roi_data is None:
+                        continue
+
+                    _, roi, offset = roi_data
+
+                    faces = insight_engine.detect_and_generate_embedding(roi, offset, cam.code)
+
                     if not faces:
                         continue
 
-                # Filter bad faces after detection and log rejection reason.
-                filtered_faces = []
-                required_min_width = envConfig.MIN_RECOGNITION_FACE_WIDTH
-                if state in (TrackState.COLLECTING_UNKNOWN, TrackState.UPDATING_UNKNOWN):
-                    required_min_width = envConfig.MIN_UNKNOWN_REG_FACE_WIDTH
-
-                for f in faces:
-                    filter_result = fast_filter(f, min_width=required_min_width)
-
-                    if isinstance(filter_result, dict) and not filter_result.get("status", False):
-                        reason = filter_result.get("reason", "unknown")
-                        details = filter_result.get("details", "")
-                        print(
-                            f"[{now_ms()}][Camera {cam.code}][Person {person_id}][FAST_FILTER] "
-                            f"reason={reason} details={details}"
-                        )
-                        continue
-
-                    filtered_faces.append(f)
-
-                faces = filtered_faces
-                if not faces:
-                    continue
-
-                # -------------------------
-                # QUALITY FILTER
-                # -------------------------
-                valid_faces = []
-                for f in faces:
-                    # if f["score"] < envConfig.SCRFD_THRESHOLD:
-                    #     continue
-
-                    x1, y1, x2, y2 = map(int, f["bbox"])
-                    # face_img = frame[y1:y2, x1:x2]
-
-                    embedding = f["embedding"]
-
-                    # 🔥 GLOBAL stability check (once per loop)
-                    if not is_stable_embedding_global(track_embedding_state, person_id, embedding):
-                        print(f"[{now_ms()}][Camera {cam.code}] Unstable embedding → person_id={person_id}")
-                        continue
-
-
-                    face_img = crop_with_margin(frame, x1, y1, x2, y2, margin=0.2)
-
-                    if face_img.size == 0:
-                        continue
-
-                    f["face_img"] = face_img
-
-                    analysis = face_landmarker_engine.analyze(face_img)
-                    # is_valid = face_landmarker_engine.is_valid_face(analysis, cam.code) 
-                    mp_score = face_landmarker_engine.score_face(analysis)
-
-                    if not analysis.get("valid"):
-                        mp_score = 0.3   # fallback, not assumption, just degradation
-                    # if mp_score == 0:
-                    #     mp_score = 0.3  # fallback, not assumption, just degradation
-
-                    # if not is_valid:
-                    # #     # print(f"[Camera {cam.code}] Face rejected by FaceLandmarker is_valid_face check")
-                    # #     continue
-                    quality = insight_engine.compute_face_quality(f, face_img, analysis)
-                    if quality < 0:
-                        continue
-
-                    final_quality = ( 0.6 * quality + 0.4 * mp_score ) 
-                    print(f"[{now_ms()}][Camera {cam.code}] Face quality → person_id={person_id}, quality={quality:.3f}, mp_score={mp_score:.3f}, final_quality={final_quality:.3f}")
-                    if final_quality < 0.35:
-                        continue
-
-                    f["quality"] = final_quality
-                    valid_faces.append(f)
-
-                if not valid_faces:
-                    continue
-
-                best_face = select_best_face(valid_faces)
-                if best_face is None:
-                    continue
-
-                bx1, _, bx2, _ = map(int, best_face["bbox"])
-                best_face_width = bx2 - bx1
-
-                embedding = best_face["embedding"]
-                quality = best_face["quality"]
-
-                face_img = best_face.get("face_img")
-                if face_img is None or face_img.size == 0:
-                    continue
-
-                pose = get_pose_name(best_face.get("pose", [None])[0]) or "unknown"
-
-                # =====================================================
-                # 🔵 STAGE 1: KNOWN
-                # =====================================================
-                if state == TrackState.COLLECTING_KNOWN:
-
-                    # stability ONLY here
-                    # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
-                    #     log(cam, person_id, "STABILITY", "REJECTED")
-                    #     continue
-
-                    buffer = track_known_buffer.get(person_id, [])
-                    buffer.append({
-                        "embedding": embedding,
-                        "quality": quality,
-                        "pose_bucket": pose,
-                        "img": face_img,
-                        "ts": time.time()
-                    })
-
-                    buffer = sorted(buffer, key=lambda x: x["quality"], reverse=True)[:3]
-                    track_known_buffer[person_id] = buffer
-
-                    log(cam, person_id, "KNOWN", f"buffer_size={len(buffer)}")
-
-                    if len(buffer) < 3:
-                        continue
-
-                    # combine
-                    emb = np.array([x["embedding"] for x in buffer])
-                    w = np.array([x["quality"] for x in buffer])
-                    final = np.average(emb, axis=0, weights=w)
-                    final /= np.linalg.norm(final)
-
-                    log(cam, person_id, "KNOWN", "RUN MATCH")
-                    match = embedding_store.find_match(final)
-
-                    log(cam, person_id, "KNOWN", f"MATCH RESULT → {match['employee_id'] if match else 'NO MATCH'}")
-
-                    if match:
-                        track_identity[person_id] = match["employee_id"]
-                        track_state[person_id] = TrackState.MATCHED_KNOWN
-
-                        track_event_emitter.recognition_confirmed(
-                            cam.code,
-                            person_id,
-                            match["employee_id"],
-                            match["similarity"]
-                        )
-
-                        log(cam, person_id, "KNOWN", f"MATCHED → {match['employee_id']}")
-                        track_known_buffer.pop(person_id, None)
-                        continue
-
-                    # move to unknown
-                    track_state[person_id] = TrackState.COLLECTING_UNKNOWN
-                    track_unknown_buffer[person_id] = [
-                        x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
-                    ]
-                    track_known_buffer.pop(person_id, None)
-
-                    log(cam, person_id, "STATE", "→ COLLECTING_UNKNOWN")
-                    continue
-
-                # =====================================================
-                # 🔵 STAGE 2: UNKNOWN
-                # =====================================================
-                elif state == TrackState.COLLECTING_UNKNOWN:
-                    if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
-                        log(
-                            cam,
-                            person_id,
-                            "UNKNOWN",
-                            f"REJECT small face width={best_face_width} < {envConfig.MIN_UNKNOWN_REG_FACE_WIDTH}"
-                        )
-                        continue
-
-                    buffer = track_unknown_buffer.get(person_id, [])
-
-                    # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
-                    #     continue
-
-                    buffer = builder.add(buffer, embedding, quality, pose, img=face_img)
-                    track_unknown_buffer[person_id] = buffer
-
-                    if not builder.is_ready(buffer):
-                        continue
-
-                    centroid = builder.build(buffer)
-                    if centroid is None:
-                        continue
-
-                    best = builder.get_best_face(buffer)
-                    if not best or best["img"] is None or best["img"].size == 0:
-                        continue
-
-                    ok, buf = cv2.imencode(".jpg", best["img"])
-                    if not ok:
-                        continue
-
-                    match = unknown_embedding_store.find_match(centroid)
-
-                    if match:
-                        unknown_id = match["unknown_id"]
-                        log(cam, person_id, "UNKNOWN", f"EXISTING UNKNOWN MATCHED → {unknown_id}")
-                    else:
-                        if cam.camera_role != "REGISTER":
-                            log(cam, person_id, "UNKNOWN", f"NO MATCH → NOT CREATING (camera_role={cam.camera_role})")
-                            continue
-                        log(cam, person_id, "UNKNOWN", "NO MATCH → CREATING NEW UNKNOWN")
-                        payload = build_unknown_payload(
-                            buffer=buffer,
-                            centroid=centroid,
-                            cam_code=cam.code,
-                            unknown_id=None,
-                            builder=builder
-                        )
-                        unknown_id = unknown_embedding_store.add_unknown(payload)
-
-                        if not unknown_id:
-                            log(cam, person_id, "UNKNOWN", "CREATE FAILED → STAY COLLECTING_UNKNOWN")
-                            continue
-                        
-                        print(f"[UNKNOWN CREATED] {unknown_id} for person_id={person_id} at camera {cam.code}")
-
-                    track_unknown_identity[person_id] = unknown_id
-                    track_state[person_id] = TrackState.UPDATING_UNKNOWN
-                    track_unknown_meta[person_id] = {"pose_best": {}, "last_update": 0}
-
-                    # log(cam, person_id, "STATE", "→ UPDATING_UNKNOWN")
-                    track_event_emitter.unknown_confirmed(cam.code, person_id, unknown_id)
-                    continue
-
-                # =====================================================
-                # 🔵 STAGE 3: UPDATE (FINAL OPTIMIZED)
-                # =====================================================
-                elif state == TrackState.UPDATING_UNKNOWN:
-                    if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
-                        continue
-
-                    unknown_id = track_unknown_identity.get(person_id)
-                    if not unknown_id:
-                        continue
-
-                    buffer = track_unknown_buffer.get(person_id, [])
-                    buffer = builder.add(buffer, embedding, quality, pose, img=face_img)
-                    track_unknown_buffer[person_id] = buffer
-
-                    if not builder.is_ready(buffer):
-                        continue
-
-                    centroid = builder.build(buffer)
-
-                    meta = track_unknown_meta.get(person_id, {
-                        "pose_best": {},
-                        "last_update": 0,
-                        "last_attempted": {}
-                    })
-
-                    pose_best = meta["pose_best"]
-                    last_attempted = meta.get("last_attempted", {})
-
-                    # cooldown
-                    if time.time() - meta["last_update"] < 2:
-                        continue
-
-                    # =====================================================
-                    # 🔥 STEP 1: Build best candidate per pose
-                    # =====================================================
-                    pose_candidates = {}
-
-                    for x in buffer:
-                        p = x["pose_bucket"]
-                        q = x["quality"]
-
-                        if p not in pose_candidates or q > pose_candidates[p]["quality"]:
-                            pose_candidates[p] = x
-
-                    # =====================================================
-                    # 🔥 STEP 2: Filter poses (STRICT LOGIC)
-                    # =====================================================
-                    poses_to_send = {}
-
-                    MIN_IMPROVEMENT = 0.08   # 🔥 increased
-                    # MIN_SEND_QUALITY = 0.60
-
-                    for p, data in pose_candidates.items():
-
-                        best_quality = data["quality"]
-
-                        local_q = pose_best.get(p, 0)
-                        global_q = unknown_embedding_store.get_pose_quality(unknown_id, p)
-
-                        effective_q = max(local_q, global_q)
-                        last_q = last_attempted.get(p, 0)
-
-                        # -----------------------------
-                        # 🔴 HARD SKIP: worse or same
-                        # -----------------------------
-                        if best_quality <= effective_q:
+                    if len(faces) > 1:
+                        # Keep only the face owned by THIS track. Discarding the whole
+                        # ROI used to make two neighbours veto each other, so the entire
+                        # cluster went unrecognised for as long as they stood together.
+                        faces = pick_track_face(faces, bbox, cam, person_id)
+                        if not faces:
                             continue
 
-                        # -----------------------------
-                        # 🔴 SKIP: micro improvement
-                        # -----------------------------
-                        if best_quality <= effective_q + MIN_IMPROVEMENT:
+                    # Filter bad faces after detection and log rejection reason.
+                    filtered_faces = []
+                    required_min_width = envConfig.MIN_RECOGNITION_FACE_WIDTH
+                    if state in (TrackState.COLLECTING_UNKNOWN, TrackState.UPDATING_UNKNOWN):
+                        required_min_width = envConfig.MIN_UNKNOWN_REG_FACE_WIDTH
+
+                    for f in faces:
+                        filter_result = fast_filter(f, min_width=required_min_width)
+
+                        if isinstance(filter_result, dict) and not filter_result.get("status", False):
+                            reason = filter_result.get("reason", "unknown")
+                            details = filter_result.get("details", "")
+                            print(
+                                f"[{now_ms()}][Camera {cam.code}][Person {person_id}][FAST_FILTER] "
+                                f"reason={reason} details={details}"
+                            )
                             continue
 
-                        # -----------------------------
-                        # 🔴 SKIP: retry suppression
-                        # -----------------------------
-                        if best_quality <= last_q + 0.04:
-                            continue
+                        filtered_faces.append(f)
 
-                        # -----------------------------
-                        # 🔴 SKIP: low quality
-                        # -----------------------------
-                        # if best_quality < MIN_SEND_QUALITY:
+                    faces = filtered_faces
+                    if not faces:
+                        continue
+
+                    # -------------------------
+                    # QUALITY FILTER
+                    # -------------------------
+                    valid_faces = []
+                    for f in faces:
+                        # if f["score"] < envConfig.SCRFD_THRESHOLD:
                         #     continue
 
-                        poses_to_send[p] = data
+                        x1, y1, x2, y2 = map(int, f["bbox"])
+                        # face_img = frame[y1:y2, x1:x2]
 
-                        # 🔥 mark attempted (important)
-                        last_attempted[p] = best_quality
+                        embedding = f["embedding"]
+
+                        # 🔥 GLOBAL stability check (once per loop)
+                        if not is_stable_embedding_global(track_embedding_state, person_id, embedding):
+                            print(f"[{now_ms()}][Camera {cam.code}] Unstable embedding → person_id={person_id}")
+                            continue
+
+
+                        face_img = crop_with_margin(frame, x1, y1, x2, y2, margin=0.2)
+
+                        if face_img.size == 0:
+                            continue
+
+                        f["face_img"] = face_img
+
+                        analysis = face_landmarker_engine.analyze(face_img)
+                        # is_valid = face_landmarker_engine.is_valid_face(analysis, cam.code) 
+                        mp_score = face_landmarker_engine.score_face(analysis)
+
+                        if not analysis.get("valid"):
+                            mp_score = 0.3   # fallback, not assumption, just degradation
+                        # if mp_score == 0:
+                        #     mp_score = 0.3  # fallback, not assumption, just degradation
+
+                        # if not is_valid:
+                        # #     # print(f"[Camera {cam.code}] Face rejected by FaceLandmarker is_valid_face check")
+                        # #     continue
+                        quality = insight_engine.compute_face_quality(f, face_img, analysis)
+                        if quality < 0:
+                            continue
+
+                        final_quality = ( 0.6 * quality + 0.4 * mp_score ) 
+                        print(f"[{now_ms()}][Camera {cam.code}] Face quality → person_id={person_id}, quality={quality:.3f}, mp_score={mp_score:.3f}, final_quality={final_quality:.3f}")
+                        if final_quality < 0.35:
+                            continue
+
+                        f["quality"] = final_quality
+                        valid_faces.append(f)
+
+                    if not valid_faces:
+                        continue
+
+                    best_face = select_best_face(valid_faces)
+                    if best_face is None:
+                        continue
+
+                    bx1, _, bx2, _ = map(int, best_face["bbox"])
+                    best_face_width = bx2 - bx1
+
+                    embedding = best_face["embedding"]
+                    quality = best_face["quality"]
+
+                    face_img = best_face.get("face_img")
+                    if face_img is None or face_img.size == 0:
+                        continue
+
+                    pose = get_pose_name(best_face.get("pose", [None])[0]) or "unknown"
 
                     # =====================================================
-                    # 🔥 STEP 3: Nothing to send → skip
+                    # 🔵 STAGE 1: KNOWN
                     # =====================================================
-                    if not poses_to_send:
+                    if state == TrackState.COLLECTING_KNOWN:
+
+                        # stability ONLY here
+                        # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
+                        #     log(cam, person_id, "STABILITY", "REJECTED")
+                        #     continue
+
+                        buffer = track_known_buffer.get(person_id, [])
+                        buffer.append({
+                            "embedding": embedding,
+                            "quality": quality,
+                            "pose_bucket": pose,
+                            "img": face_img,
+                            "ts": time.time()
+                        })
+
+                        buffer = sorted(buffer, key=lambda x: x["quality"], reverse=True)[:3]
+                        track_known_buffer[person_id] = buffer
+
+                        log(cam, person_id, "KNOWN", f"buffer_size={len(buffer)}")
+
+                        if len(buffer) < 3:
+                            continue
+
+                        # combine
+                        emb = np.array([x["embedding"] for x in buffer])
+                        w = np.array([x["quality"] for x in buffer])
+                        final = np.average(emb, axis=0, weights=w)
+                        final /= np.linalg.norm(final)
+
+                        log(cam, person_id, "KNOWN", "RUN MATCH")
+                        match = embedding_store.find_match(final)
+
+                        log(cam, person_id, "KNOWN", f"MATCH RESULT → {match['employee_id'] if match else 'NO MATCH'}")
+
+                        if match:
+                            track_identity[person_id] = match["employee_id"]
+                            track_state[person_id] = TrackState.MATCHED_KNOWN
+
+                            track_event_emitter.recognition_confirmed(
+                                cam.code,
+                                person_id,
+                                match["employee_id"],
+                                match["similarity"]
+                            )
+
+                            log(cam, person_id, "KNOWN", f"MATCHED → {match['employee_id']}")
+                            track_known_buffer.pop(person_id, None)
+                            continue
+
+                        # move to unknown
+                        track_state[person_id] = TrackState.COLLECTING_UNKNOWN
+                        track_unknown_buffer[person_id] = [
+                            x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
+                        ]
+                        track_known_buffer.pop(person_id, None)
+
+                        log(cam, person_id, "STATE", "→ COLLECTING_UNKNOWN")
                         continue
 
                     # =====================================================
-                    # 🔥 STEP 4: Build payload
+                    # 🔵 STAGE 2: UNKNOWN
                     # =====================================================
-                    pose_payload = {}
-
-                    for p, data in poses_to_send.items():
-
-                        img = data["img"]
-
-
-
-                        if img is None or img.size == 0:
+                    elif state == TrackState.COLLECTING_UNKNOWN:
+                        if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
+                            log(
+                                cam,
+                                person_id,
+                                "UNKNOWN",
+                                f"REJECT small face width={best_face_width} < {envConfig.MIN_UNKNOWN_REG_FACE_WIDTH}"
+                            )
                             continue
 
-                        h, w = img.shape[:2]
-                        ok, buf = cv2.imencode(".jpg", img)
+                        buffer = track_unknown_buffer.get(person_id, [])
 
+                        # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
+                        #     continue
+
+                        buffer = builder.add(buffer, embedding, quality, pose, img=face_img)
+                        track_unknown_buffer[person_id] = buffer
+
+                        if not builder.is_ready(buffer):
+                            continue
+
+                        centroid = builder.build(buffer)
+                        if centroid is None:
+                            continue
+
+                        best = builder.get_best_face(buffer)
+                        if not best or best["img"] is None or best["img"].size == 0:
+                            continue
+
+                        ok, buf = cv2.imencode(".jpg", best["img"])
                         if not ok:
                             continue
 
-                        pose_payload[p] = {
-                            "embedding": data["embedding"].tolist(),
-                            "quality": data["quality"],
-                             "faceSize": {
-                                "w": w,
-                                "h": h
-                            },
-                            "image": buf.tobytes(),   # 🔥 per-pose image
-                            "ts": int(time.time() * 1000)
-                        }
+                        match = unknown_embedding_store.find_match(centroid)
 
-                    # nothing valid
-                    if not pose_payload:
+                        if match:
+                            unknown_id = match["unknown_id"]
+                            log(cam, person_id, "UNKNOWN", f"EXISTING UNKNOWN MATCHED → {unknown_id}")
+                        else:
+                            if cam.camera_role != "REGISTER":
+                                log(cam, person_id, "UNKNOWN", f"NO MATCH → NOT CREATING (camera_role={cam.camera_role})")
+                                continue
+                            log(cam, person_id, "UNKNOWN", "NO MATCH → CREATING NEW UNKNOWN")
+                            payload = build_unknown_payload(
+                                buffer=buffer,
+                                centroid=centroid,
+                                cam_code=cam.code,
+                                unknown_id=None,
+                                builder=builder
+                            )
+                            unknown_id = unknown_embedding_store.add_unknown(payload)
+
+                            if not unknown_id:
+                                log(cam, person_id, "UNKNOWN", "CREATE FAILED → STAY COLLECTING_UNKNOWN")
+                                continue
+                        
+                            print(f"[UNKNOWN CREATED] {unknown_id} for person_id={person_id} at camera {cam.code}")
+
+                        track_unknown_identity[person_id] = unknown_id
+                        track_state[person_id] = TrackState.UPDATING_UNKNOWN
+                        track_unknown_meta[person_id] = {"pose_best": {}, "last_update": 0}
+
+                        # log(cam, person_id, "STATE", "→ UPDATING_UNKNOWN")
+                        track_event_emitter.unknown_confirmed(cam.code, person_id, unknown_id)
                         continue
 
                     # =====================================================
-                    # 🔥 STEP 5: API CALL
+                    # 🔵 STAGE 3: UPDATE (FINAL OPTIMIZED)
                     # =====================================================
-                    updated_id = unknown_embedding_store.update_unknown(
-                        unknown_id,
-                        centroid,
-                        int(time.time() * 1000),
-                        cam.code,
-                        pose_payload
-                    )
+                    elif state == TrackState.UPDATING_UNKNOWN:
+                        if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
+                            continue
 
-                    if not updated_id:
-                        log(cam, person_id, "UPDATE", "UPDATE FAILED → KEEP COLLECTING")
-                        continue
+                        unknown_id = track_unknown_identity.get(person_id)
+                        if not unknown_id:
+                            continue
 
-                    # =====================================================
-                    # 🔥 STEP 6: UPDATE CACHE
-                    # =====================================================
-                    for p, data in poses_to_send.items():
-                        pose_best[p] = data["quality"]
+                        buffer = track_unknown_buffer.get(person_id, [])
+                        buffer = builder.add(buffer, embedding, quality, pose, img=face_img)
+                        track_unknown_buffer[person_id] = buffer
 
-                        unknown_embedding_store.update_pose_quality_cache(
+                        if not builder.is_ready(buffer):
+                            continue
+
+                        centroid = builder.build(buffer)
+
+                        meta = track_unknown_meta.get(person_id, {
+                            "pose_best": {},
+                            "last_update": 0,
+                            "last_attempted": {}
+                        })
+
+                        pose_best = meta["pose_best"]
+                        last_attempted = meta.get("last_attempted", {})
+
+                        # cooldown
+                        if time.time() - meta["last_update"] < 2:
+                            continue
+
+                        # =====================================================
+                        # 🔥 STEP 1: Build best candidate per pose
+                        # =====================================================
+                        pose_candidates = {}
+
+                        for x in buffer:
+                            p = x["pose_bucket"]
+                            q = x["quality"]
+
+                            if p not in pose_candidates or q > pose_candidates[p]["quality"]:
+                                pose_candidates[p] = x
+
+                        # =====================================================
+                        # 🔥 STEP 2: Filter poses (STRICT LOGIC)
+                        # =====================================================
+                        poses_to_send = {}
+
+                        MIN_IMPROVEMENT = 0.08   # 🔥 increased
+                        # MIN_SEND_QUALITY = 0.60
+
+                        for p, data in pose_candidates.items():
+
+                            best_quality = data["quality"]
+
+                            local_q = pose_best.get(p, 0)
+                            global_q = unknown_embedding_store.get_pose_quality(unknown_id, p)
+
+                            effective_q = max(local_q, global_q)
+                            last_q = last_attempted.get(p, 0)
+
+                            # -----------------------------
+                            # 🔴 HARD SKIP: worse or same
+                            # -----------------------------
+                            if best_quality <= effective_q:
+                                continue
+
+                            # -----------------------------
+                            # 🔴 SKIP: micro improvement
+                            # -----------------------------
+                            if best_quality <= effective_q + MIN_IMPROVEMENT:
+                                continue
+
+                            # -----------------------------
+                            # 🔴 SKIP: retry suppression
+                            # -----------------------------
+                            if best_quality <= last_q + 0.04:
+                                continue
+
+                            # -----------------------------
+                            # 🔴 SKIP: low quality
+                            # -----------------------------
+                            # if best_quality < MIN_SEND_QUALITY:
+                            #     continue
+
+                            poses_to_send[p] = data
+
+                            # 🔥 mark attempted (important)
+                            last_attempted[p] = best_quality
+
+                        # =====================================================
+                        # 🔥 STEP 3: Nothing to send → skip
+                        # =====================================================
+                        if not poses_to_send:
+                            continue
+
+                        # =====================================================
+                        # 🔥 STEP 4: Build payload
+                        # =====================================================
+                        pose_payload = {}
+
+                        for p, data in poses_to_send.items():
+
+                            img = data["img"]
+
+
+
+                            if img is None or img.size == 0:
+                                continue
+
+                            h, w = img.shape[:2]
+                            ok, buf = cv2.imencode(".jpg", img)
+
+                            if not ok:
+                                continue
+
+                            pose_payload[p] = {
+                                "embedding": data["embedding"].tolist(),
+                                "quality": data["quality"],
+                                 "faceSize": {
+                                    "w": w,
+                                    "h": h
+                                },
+                                "image": buf.tobytes(),   # 🔥 per-pose image
+                                "ts": int(time.time() * 1000)
+                            }
+
+                        # nothing valid
+                        if not pose_payload:
+                            continue
+
+                        # =====================================================
+                        # 🔥 STEP 5: API CALL
+                        # =====================================================
+                        updated_id = unknown_embedding_store.update_unknown(
                             unknown_id,
-                            p,
-                            data["quality"]
+                            centroid,
+                            int(time.time() * 1000),
+                            cam.code,
+                            pose_payload
                         )
 
-                    track_unknown_meta[person_id] = {
-                        "pose_best": pose_best,
-                        "last_update": time.time(),
-                        "last_attempted": last_attempted
-                    }
+                        if not updated_id:
+                            log(cam, person_id, "UPDATE", "UPDATE FAILED → KEEP COLLECTING")
+                            continue
 
-                    log(cam, person_id, "UPDATE",
-                        f"UPDATED → {unknown_id}, poses={list(poses_to_send.keys())}")
+                        # =====================================================
+                        # 🔥 STEP 6: UPDATE CACHE
+                        # =====================================================
+                        for p, data in poses_to_send.items():
+                            pose_best[p] = data["quality"]
+
+                            unknown_embedding_store.update_pose_quality_cache(
+                                unknown_id,
+                                p,
+                                data["quality"]
+                            )
+
+                        track_unknown_meta[person_id] = {
+                            "pose_best": pose_best,
+                            "last_update": time.time(),
+                            "last_attempted": last_attempted
+                        }
+
+                        log(cam, person_id, "UPDATE",
+                            f"UPDATED → {unknown_id}, poses={list(poses_to_send.keys())}")
+            except Exception:
+                # One bad frame must never take the camera thread down.
+                frame_errors += 1
+                if frame_errors % 30 == 1:
+                    print(f"[Camera {cam.code}] frame error #{frame_errors}: {traceback.format_exc()}")
+                continue

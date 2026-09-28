@@ -20,17 +20,18 @@ def extract_person_roi(frame, person_id, bbox, pad_x=8, pad_y=20):
 
     x1, y1, x2, y2 = bbox
 
-    # convert to int
-    x1 = int(x1)
-    y1 = int(y1)
-    x2 = int(x2)
-    y2 = int(y2)
+    # pads may be fractional, so convert to int AFTER padding is applied
+    pad_x = int(pad_x)
+    pad_y = int(pad_y)
 
     # expand box slightly
-    x1 = max(0, x1 - pad_x)
-    y1 = max(0, y1 - pad_y)
-    x2 = min(w, x2 + pad_x)
-    y2 = min(h, y2 + pad_y)
+    x1 = max(0, int(x1) - pad_x)
+    y1 = max(0, int(y1) - pad_y)
+    x2 = min(w, int(x2) + pad_x)
+    y2 = min(h, int(y2) + pad_y)
+
+    if x2 <= x1 or y2 <= y1:
+        return None
 
     # crop ROI
     roi = frame[y1:y2, x1:x2]
