@@ -322,23 +322,19 @@ def _camera_loop(cam: CameraConfig) -> None:
                     device=YOLO_DEVICE,
                 )
 
-                if results[0].boxes.id is None:
-                    continue
+                # A frame with nobody in it is still a frame. Detection decides only
+                # what metadata rides along with the picture, never whether the
+                # picture is published, so the preview stays continuous through empty
+                # scenes and the face pipeline simply has nothing to do this frame.
+                detections = results[0].boxes
+                has_persons = detections is not None and detections.id is not None
 
-                boxes = results[0].boxes.xyxy.cpu().numpy()
-                ids = results[0].boxes.id.int().cpu().numpy()
-
-                lost = track_event_emitter.cleanup_lost_tracks(cam.code, ids.tolist())
-
-                for tid in lost:
-                    track_state.pop(tid, None)
-                    track_identity.pop(tid, None)
-                    track_identity_name.pop(tid, None)
-                    track_known_buffer.pop(tid, None)
-                    track_unknown_buffer.pop(tid, None)
-                    track_unknown_identity.pop(tid, None)
-                    track_unknown_meta.pop(tid, None)
-                    track_embedding_state.pop(tid, None)
+                if has_persons:
+                    boxes = detections.xyxy.cpu().numpy()
+                    ids = detections.id.int().cpu().numpy()
+                else:
+                    boxes = np.empty((0, 4), dtype=np.float32)
+                    ids = np.empty((0,), dtype=np.int64)
 
                 # ---------------------------------------------------------------
                 # PREVIEW PUBLISH — every frame, cheap, before the face pipeline.
@@ -388,6 +384,23 @@ def _camera_loop(cam: CameraConfig) -> None:
                         source_h=frame_h,
                         tracks=preview_tracks,
                     )
+
+                if not has_persons:
+                    # Nothing to recognise, and nothing to retire: a short empty gap
+                    # must not end tracks that are still on screen in the preview.
+                    continue
+
+                lost = track_event_emitter.cleanup_lost_tracks(cam.code, ids.tolist())
+
+                for tid in lost:
+                    track_state.pop(tid, None)
+                    track_identity.pop(tid, None)
+                    track_identity_name.pop(tid, None)
+                    track_known_buffer.pop(tid, None)
+                    track_unknown_buffer.pop(tid, None)
+                    track_unknown_identity.pop(tid, None)
+                    track_unknown_meta.pop(tid, None)
+                    track_embedding_state.pop(tid, None)
 
                 # ---------------------------------------------------------------
                 # FACE PIPELINE SCHEDULING
