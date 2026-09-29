@@ -24,6 +24,7 @@ from app.camera.preview_publisher import PreviewPublisher
 from app.config.config import envConfig
 from app.events.publisher import EventPublisher
 from app.recognition import embedding_store, unknown_embedding_store
+from app.recognition.unknown_creation_log import log_decision as log_unknown_decision, face_metrics
 from app.tracking.track_manager import TrackEventEmitter
 from app.database import redis_client
 
@@ -726,6 +727,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                             continue
 
                         f["quality"] = final_quality
+                        # Carried so the STAGE 2 audit record can report the value for
+                        # the face that actually won selection, not just this one.
+                        f["eye_sharpness"] = analysis.get("eye_sharpness")
                         valid_faces.append(f)
 
                     if not valid_faces:
@@ -862,6 +866,24 @@ def _camera_loop(cam: CameraConfig) -> None:
                         track_known_buffer.pop(person_id, None)
 
                         log(cam, person_id, "STATE", "→ COLLECTING_UNKNOWN")
+                        # These samples were accepted during the KNOWN stage, before
+                        # the unknown gate could see them. Log them so a future
+                        # eye-sharpness reject can be evaluated against the real
+                        # values that would have been dropped, not just the ones
+                        # arriving after this point.
+                        log_unknown_decision(
+                            "unknown_buffer_seeded",
+                            cam.code,
+                            person_id,
+                            role=cam.camera_role,
+                            buffer_size=len(track_unknown_buffer[person_id]),
+                            **face_metrics(
+                                analysis,
+                                quality,
+                                final_quality,
+                                best_face_width,
+                            ),
+                        )
                         continue
 
                     # =====================================================
@@ -874,6 +896,46 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 person_id,
                                 "UNKNOWN",
                                 f"REJECT small face width={best_face_width} < {envConfig.MIN_UNKNOWN_REG_FACE_WIDTH}"
+                            )
+                            log_unknown_decision(
+                                "unknown_rejected",
+                                cam.code,
+                                person_id,
+                                reason="face_width",
+                                threshold=envConfig.MIN_UNKNOWN_REG_FACE_WIDTH,
+                                **face_metrics(
+                                    analysis, quality, final_quality, best_face_width
+                                ),
+                            )
+                            continue
+
+                        # ---------------- EYE SHARPNESS ---------------- #
+                        # Log-only by default. ENFORCE_UNKNOWN_EYE_SHARPNESS=0 means
+                        # this measures and records but never drops, so the threshold
+                        # can be set from a real distribution before it starts
+                        # silently removing registrations.
+                        eye_sharpness = best_face.get("eye_sharpness")
+                        min_sharpness = envConfig.MIN_UNKNOWN_EYE_SHARPNESS
+                        if (
+                            envConfig.ENFORCE_UNKNOWN_EYE_SHARPNESS
+                            and eye_sharpness is not None
+                            and eye_sharpness < min_sharpness
+                        ):
+                            log(
+                                cam,
+                                person_id,
+                                "UNKNOWN",
+                                f"REJECT blurry eyes eye_sharpness={eye_sharpness:.0f} < {min_sharpness}",
+                            )
+                            log_unknown_decision(
+                                "unknown_rejected",
+                                cam.code,
+                                person_id,
+                                reason="eye_sharpness",
+                                threshold=min_sharpness,
+                                **face_metrics(
+                                    analysis, quality, final_quality, best_face_width
+                                ),
                             )
                             continue
 
@@ -905,9 +967,32 @@ def _camera_loop(cam: CameraConfig) -> None:
                         if match:
                             unknown_id = match["unknown_id"]
                             log(cam, person_id, "UNKNOWN", f"EXISTING UNKNOWN MATCHED → {unknown_id}")
+                            log_unknown_decision(
+                                "unknown_matched_existing",
+                                cam.code,
+                                person_id,
+                                unknown_id=unknown_id,
+                                similarity=match.get("similarity"),
+                                role=cam.camera_role,
+                                buffer_size=len(buffer),
+                                **face_metrics(
+                                    analysis, quality, final_quality, best_face_width
+                                ),
+                            )
                         else:
                             if cam.camera_role != "REGISTER":
                                 log(cam, person_id, "UNKNOWN", f"NO MATCH → NOT CREATING (camera_role={cam.camera_role})")
+                                log_unknown_decision(
+                                    "unknown_not_created",
+                                    cam.code,
+                                    person_id,
+                                    reason="camera_role_not_register",
+                                    role=cam.camera_role,
+                                    buffer_size=len(buffer),
+                                    **face_metrics(
+                                        analysis, quality, final_quality, best_face_width
+                                    ),
+                                )
                                 continue
                             log(cam, person_id, "UNKNOWN", "NO MATCH → CREATING NEW UNKNOWN")
                             payload = build_unknown_payload(
@@ -921,9 +1006,32 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                             if not unknown_id:
                                 log(cam, person_id, "UNKNOWN", "CREATE FAILED → STAY COLLECTING_UNKNOWN")
+                                log_unknown_decision(
+                                    "unknown_create_failed",
+                                    cam.code,
+                                    person_id,
+                                    role=cam.camera_role,
+                                    buffer_size=len(buffer),
+                                    **face_metrics(
+                                        analysis, quality, final_quality, best_face_width
+                                    ),
+                                )
                                 continue
-                        
+
                             print(f"[UNKNOWN CREATED] {unknown_id} for person_id={person_id} at camera {cam.code}")
+                            # eye_sharpness here is the current frame's value, not the
+                            # best sample's — the builder buffer does not carry it.
+                            log_unknown_decision(
+                                "unknown_registered",
+                                cam.code,
+                                person_id,
+                                unknown_id=unknown_id,
+                                role=cam.camera_role,
+                                buffer_size=len(buffer),
+                                **face_metrics(
+                                    analysis, quality, final_quality, best_face_width
+                                ),
+                            )
 
                         track_unknown_identity[person_id] = unknown_id
                         track_state[person_id] = TrackState.UPDATING_UNKNOWN

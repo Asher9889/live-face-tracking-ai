@@ -51,4 +51,25 @@ class EnvConfig:
     MIN_UNKNOWN_CREATE_FRAMES = int(os.getenv("MIN_UNKNOWN_CREATE_FRAMES", "2"))
     SCRFD_THRESHOLD = float(os.getenv("SCRFD_THRESHOLD", "0.50"))
 
+    # Eye-region sharpness (Laplacian variance around each iris centre, measured on
+    # the upscaled crop) below which a face is considered too blurred to register a
+    # new unknown identity from. A blurry face still fails to match anyone, so it
+    # gets stored as an unknown — which is the noise this threshold removes.
+    #
+    # NOT YET ACTIVE as a reject: the value is measured and logged only, so a real
+    # distribution can be observed before it starts dropping faces. See
+    # UNKNOWN_CREATION_LOG_PATH and ENFORCE_UNKNOWN_EYE_SHARPNESS below.
+    MIN_UNKNOWN_EYE_SHARPNESS = int(os.getenv("MIN_UNKNOWN_EYE_SHARPNESS", "1000"))
+    # Master switch for the eye-sharpness reject. "0" = measure and log only.
+    ENFORCE_UNKNOWN_EYE_SHARPNESS = bool(int(os.getenv("ENFORCE_UNKNOWN_EYE_SHARPNESS", "0")))
+
+    # Structured audit log for unknown-registration decisions (one JSON object per
+    # line, size-rotated). Face images and embeddings are deliberately NOT written
+    # here — that data already lives in the API store, and putting biometrics in a
+    # plaintext file is not worth the convenience of debugging.
+    UNKNOWN_CREATION_LOG_ENABLED = bool(int(os.getenv("UNKNOWN_CREATION_LOG_ENABLED", "1")))
+    UNKNOWN_CREATION_LOG_PATH = os.getenv("UNKNOWN_CREATION_LOG_PATH", "logs/unknown_creation.log")
+    UNKNOWN_CREATION_LOG_MAX_BYTES = int(os.getenv("UNKNOWN_CREATION_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+    UNKNOWN_CREATION_LOG_BACKUPS = int(os.getenv("UNKNOWN_CREATION_LOG_BACKUPS", "5"))
+
 envConfig = EnvConfig()  

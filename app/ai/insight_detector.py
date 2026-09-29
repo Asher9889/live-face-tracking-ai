@@ -310,7 +310,7 @@ class InsightFaceEngine:
         # If pose exists → compute
         if yaw is not None:
 
-            if yaw > 30:
+            if yaw > 45:
                 return -1  # only extreme reject
 
             yaw_penalty = (yaw / 30) ** 2

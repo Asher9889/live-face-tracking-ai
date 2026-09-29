@@ -1854,7 +1854,21 @@ _LM = {
     "left_eye_inner": 133,
     "right_eye_outer": 263,
     "right_eye_inner": 362,
+    # Iris centres (MediaPipe returns 478 landmarks; 468-477 are the irises).
+    # Used only to centre the eye sharpness patch — see _measure_eye_sharpness.
+    "left_iris_center": 468,
+    "right_iris_center": 473,
 }
+
+# Radius (px) of the square patch sampled around each iris centre for the
+# sharpness measurement. Large enough to hold iris detail, small enough that a
+# sharp iris keeps the patch well above background pixels.
+_EYE_PATCH_RADIUS = 6
+
+# The crop is resampled so the detected face is this wide (px) before the sharpness
+# patch is taken. Without this the metric is not scale-invariant: a fixed-size patch
+# over a large native-resolution face sits inside a smooth iris and reads low.
+_CANONICAL_FACE_WIDTH = 160
 
 
 class FaceLandmarkerEngine:
@@ -1954,6 +1968,14 @@ class FaceLandmarkerEngine:
         # ---------------- GEOMETRY ---------------- #
         geo = self._extract_geometry(lm)
 
+        # ---------------- EYE SHARPNESS ---------------- #
+        # Resampled to a canonical FACE WIDTH before measuring, not just upscaled.
+        # A fixed-size patch is not scale-invariant: a large face measured at native
+        # resolution puts the patch deep inside a smooth iris and reads LOW, while
+        # the same face resampled smaller reads high. Normalising on face width
+        # makes the number depend on focus alone, which is the whole point.
+        eye_sharpness = self._measure_eye_sharpness(lm, inference_img)
+
         return {
             "valid": True,
             "blur": blur,
@@ -1961,8 +1983,72 @@ class FaceLandmarkerEngine:
             "yaw": yaw,
             "pitch": pitch,
             "roll": roll,
+            "eye_sharpness": eye_sharpness,
             **geo,
         }
+
+    # =========================================================
+    # EYE SHARPNESS
+    # =========================================================
+    def _measure_eye_sharpness(self, lm_list, img) -> Optional[float]:
+        """
+        Laplacian variance of the two iris-centred patches, measured after resampling
+        the crop so the detected face is a fixed width in pixels.
+
+        The eye region is where the discriminative detail for a face embedding lives,
+        so this separates soft focus far better than whole-crop variance, which
+        scales with how much content is in frame and therefore calls a big blurry
+        image "sharp".
+
+        Returns None when it cannot be measured, so callers can distinguish
+        "unknown" from "measured zero".
+        """
+        if img is None or img.size == 0 or lm_list is None:
+            return None
+
+        # Models that do not emit iris landmarks give fewer than 478 points.
+        if len(lm_list) < 474:
+            return None
+
+        h, w = img.shape[:2]
+        xs = [p.x for p in lm_list]
+        ys = [p.y for p in lm_list]
+        face_w = (max(xs) - min(xs)) * w
+        if face_w < 1:
+            return None
+
+        # Resample so the face occupies a constant width, making the patch-to-iris
+        # ratio constant regardless of the original crop size.
+        scale = _CANONICAL_FACE_WIDTH / face_w
+        if abs(scale - 1.0) > 0.01:
+            img = cv2.resize(
+                img,
+                (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+                interpolation=cv2.INTER_LANCZOS4,
+            )
+            h, w = img.shape[:2]
+
+        r = _EYE_PATCH_RADIUS
+        values = []
+
+        for key in ("left_iris_center", "right_iris_center"):
+            idx = _LM.get(key)
+            if idx is None or idx >= len(lm_list):
+                continue
+            p = lm_list[idx]
+            cx, cy = int(p.x * w), int(p.y * h)
+            x0, x1 = max(0, cx - r), min(w, cx + r + 1)
+            y0, y1 = max(0, cy - r), min(h, cy + r + 1)
+            if x1 - x0 < 3 or y1 - y0 < 3:
+                continue
+            patch = img[y0:y1, x0:x1]
+            if patch.ndim == 3:
+                patch = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+            values.append(float(cv2.Laplacian(patch, cv2.CV_64F).var()))
+
+        if not values:
+            return None
+        return float(np.mean(values))
 
     # =========================================================
     # SCORE (SOFT ONLY — NO HARD REJECT)
