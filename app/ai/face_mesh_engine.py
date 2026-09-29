@@ -1855,9 +1855,23 @@ _LM = {
     "right_eye_outer": 263,
     "right_eye_inner": 362,
     # Iris centres (MediaPipe returns 478 landmarks; 468-477 are the irises).
-    # Used only to centre the eye sharpness patch — see _measure_eye_sharpness.
+    # Used to centre the eye sharpness patch and the iris contrast measurement.
     "left_iris_center": 468,
     "right_iris_center": 473,
+}
+
+# Ring of landmarks around each iris. Used to size the iris disc, so the
+# measurement scales with the real iris instead of a fixed pixel radius.
+_IRIS_RING = {
+    "left": (469, 470, 471, 472),
+    "right": (474, 475, 476, 477),
+}
+
+# Eyelid landmark sets, for the eye-aperture (EAR) diagnostic.
+# NOTE: measured, not trusted — see the EAR note in _measure_iris_metrics.
+_EYE_LIDS = {
+    "left": ((159, 158, 157), (145, 144, 153), (33, 133)),
+    "right": ((386, 385, 384), (374, 373, 390), (263, 362)),
 }
 
 # Radius (px) of the square patch sampled around each iris centre for the
@@ -1865,9 +1879,9 @@ _LM = {
 # sharp iris keeps the patch well above background pixels.
 _EYE_PATCH_RADIUS = 6
 
-# The crop is resampled so the detected face is this wide (px) before the sharpness
-# patch is taken. Without this the metric is not scale-invariant: a fixed-size patch
-# over a large native-resolution face sits inside a smooth iris and reads low.
+# The crop is resampled so the detected face is this fixed width (px) before any
+# eye measurement. Without this the metrics are not scale-invariant: a fixed-size
+# patch over a large native-resolution face sits inside a smooth iris and reads low.
 _CANONICAL_FACE_WIDTH = 160
 
 
@@ -1976,6 +1990,11 @@ class FaceLandmarkerEngine:
         # makes the number depend on focus alone, which is the whole point.
         eye_sharpness = self._measure_eye_sharpness(lm, inference_img)
 
+        # ---------------- IRIS PRESENCE ---------------- #
+        # Measured from pixels, not landmark geometry — see _measure_iris_metrics
+        # for why the landmark-only alternatives cannot detect an invisible iris.
+        iris = self._measure_iris_metrics(lm, inference_img)
+
         return {
             "valid": True,
             "blur": blur,
@@ -1984,8 +2003,139 @@ class FaceLandmarkerEngine:
             "pitch": pitch,
             "roll": roll,
             "eye_sharpness": eye_sharpness,
+            **iris,
             **geo,
         }
+
+    # =========================================================
+    # IRIS PRESENCE (pixel evidence, not landmark geometry)
+    # =========================================================
+    def _measure_iris_metrics(self, lm_list, img) -> Dict:
+        """
+        Per-eye measurements of whether an iris is actually visible in the pixels.
+
+        Why this exists: MediaPipe infers landmarks from overall facial geometry, so
+        it emits a full 478-point face with plausible eye positions even when the
+        eyes are closed, turned away, or occluded. Verified on a synthetic
+        closed-eye test: the eye-aperture ratio did NOT collapse (one sample rose
+        from 0.16 to 0.30), so any metric derived purely from landmark positions
+        is blind to this failure. Only measuring the pixels works.
+
+        Metrics, per eye, all scaled off the iris ring radius so they are
+        resolution-independent:
+
+        - `iris_contrast`: brightness of the surrounding ring minus brightness of
+          the iris core. A visible iris is a dark disc against lighter sclera/skin,
+          so this is positive and large. Closed, covered, or turned away and there
+          is no such gradient, so it collapses toward zero.
+        - `iris_core_brightness`: raw mean brightness of the iris core, for
+          separating a dark iris from a dim scene.
+        - `eye_aperture`: vertical lid opening over eye width. Logged as a
+          diagnostic only, NOT a gate — see the note above.
+
+        Averages the two eyes, and separately reports the weaker eye, because one
+        visible eye is not enough to identify someone.
+
+        Returns {} when the model gives no iris landmarks, so callers can tell
+        "unmeasurable" from "measured zero".
+        """
+        empty = {}
+        if img is None or img.size == 0 or lm_list is None:
+            return empty
+
+        # Models without iris landmarks give fewer than 478 points.
+        if len(lm_list) < 474:
+            return empty
+
+        h, w = img.shape[:2]
+        xs = [p.x for p in lm_list]
+        face_w = (max(xs) - min(xs)) * w
+        if face_w < 1:
+            return empty
+
+        # Resample to a constant face width so every radius below is measured in
+        # the same units regardless of how far the person is from the camera.
+        scale = _CANONICAL_FACE_WIDTH / face_w
+        if abs(scale - 1.0) > 0.01:
+            img = cv2.resize(
+                img,
+                (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+                interpolation=cv2.INTER_LANCZOS4,
+            )
+            h, w = img.shape[:2]
+
+        gray = None
+        contrasts = []
+        core_brights = []
+        apertures = []
+        iris_radii = []
+
+        for side in ("left", "right"):
+            ring = _IRIS_RING[side]
+            center = _LM[f"{side}_iris_center"]
+            if center >= len(lm_list) or any(i >= len(lm_list) for i in ring):
+                continue
+
+            pts = np.array([[lm_list[i].x * w, lm_list[i].y * h] for i in ring])
+            ctr = np.array([lm_list[center].x * w, lm_list[center].y * h])
+            iris_r = float(np.linalg.norm(pts - ctr, axis=1).mean())
+
+            # Too small to measure reliably (a few pixels across).
+            if iris_r < 1.5:
+                continue
+            iris_radii.append(iris_r)
+
+            if gray is None:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+            # Core = iris/pupil disc. Ring = sclera and surrounding skin, which is
+            # what a visible dark iris is measured against.
+            core_r = iris_r * 0.55
+            ring_r_in = iris_r * 0.95
+            ring_r_out = iris_r * 1.9
+            pad = int(np.ceil(ring_r_out)) + 1
+            cx, cy = int(round(ctr[0])), int(round(ctr[1]))
+            x0, x1 = max(0, cx - pad), min(w, cx + pad + 1)
+            y0, y1 = max(0, cy - pad), min(h, cy + pad + 1)
+            sub = gray[y0:y1, x0:x1]
+            if sub.size == 0:
+                continue
+
+            yy, xx = np.mgrid[0:sub.shape[0], 0:sub.shape[1]]
+            dist = np.sqrt((yy - (cy - y0)) ** 2 + (xx - (cx - x0)) ** 2)
+            core = sub[dist <= core_r]
+            ring = sub[(dist >= ring_r_in) & (dist <= ring_r_out)]
+            if core.size >= 3 and ring.size >= 3:
+                contrasts.append(float(ring.mean() - core.mean()))
+                core_brights.append(float(core.mean()))
+
+            up, dn, corners = _EYE_LIDS[side]
+            if all(i < len(lm_list) for i in up + dn + corners):
+                c1, c2 = corners
+                vert = float(np.linalg.norm(
+                    np.mean([[lm_list[i].x * w, lm_list[i].y * h] for i in up], axis=0)
+                    - np.mean([[lm_list[i].x * w, lm_list[i].y * h] for i in dn], axis=0)
+                ))
+                horiz = float(np.linalg.norm(np.array(
+                    [lm_list[c1].x * w, lm_list[c1].y * h]
+                ) - np.array([lm_list[c2].x * w, lm_list[c2].y * h])))
+                if horiz > 1:
+                    apertures.append(vert / horiz)
+
+        if not iris_radii:
+            return empty
+
+        out = {
+            "iris_radius": float(np.mean(iris_radii)),
+            # MIN across eyes: a face with one eye visible is still not reliably
+            # identifiable, and averaging would let a good eye mask a blind one.
+            "iris_contrast_min": float(min(contrasts)) if contrasts else None,
+            "iris_contrast_mean": float(np.mean(contrasts)) if contrasts else None,
+            "iris_core_brightness": float(np.mean(core_brights)) if core_brights else None,
+            "eye_aperture": float(min(apertures)) if apertures else None,
+            "iris_eyes_measured": len(iris_radii),
+        }
+        return out
 
     # =========================================================
     # EYE SHARPNESS
@@ -2012,7 +2162,6 @@ class FaceLandmarkerEngine:
 
         h, w = img.shape[:2]
         xs = [p.x for p in lm_list]
-        ys = [p.y for p in lm_list]
         face_w = (max(xs) - min(xs)) * w
         if face_w < 1:
             return None

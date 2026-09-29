@@ -131,14 +131,41 @@ def face_metrics(analysis, quality, final_quality, best_face_width=None):
     and every record carries the same field names.
     """
     analysis = analysis or {}
+
+    def num(key):
+        """
+        Coerce to a native float.
+
+        The eye metrics come out of numpy as float32, which json.dumps cannot
+        serialise. The logger's fallback would stringify them into quoted text,
+        which silently breaks every numeric comparison made against the log
+        (jq '.iris_contrast < 10' on a string is not the same test). Coerce here
+        so a recorded metric is always a real JSON number.
+        """
+        value = analysis.get(key)
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     return {
-        "eye_sharpness": analysis.get("eye_sharpness"),
-        "blur": analysis.get("blur"),
-        "yaw": analysis.get("yaw"),
-        "pitch": analysis.get("pitch"),
-        "roll": analysis.get("roll"),
-        "eye_dist_ratio": analysis.get("eye_dist_ratio"),
-        "face_w_in_crop": analysis.get("face_width"),
+        "eye_sharpness": num("eye_sharpness"),
+        # Iris-presence signals. iris_contrast is the gate candidate: it is the
+        # weaker of the two eyes, and reads near zero when an eye is closed, turned
+        # away, or occluded. Logged only for now — no threshold is enforced.
+        "iris_contrast": num("iris_contrast_min"),
+        "iris_contrast_mean": num("iris_contrast_mean"),
+        "iris_core_brightness": num("iris_core_brightness"),
+        "iris_radius": num("iris_radius"),
+        "eye_aperture": num("eye_aperture"),
+        "blur": num("blur"),
+        "yaw": num("yaw"),
+        "pitch": num("pitch"),
+        "roll": num("roll"),
+        "eye_dist_ratio": num("eye_dist_ratio"),
+        "face_w_in_crop": num("face_width"),
         "quality": quality,
         "final_quality": final_quality,
         "best_face_width": best_face_width,
