@@ -356,7 +356,7 @@ class TrackEventEmitter:
     # -----------------------------
     # TRACK CLEANUP
     # -----------------------------
-    def cleanup_lost_tracks(self, cam_code, active_ids):
+    def cleanup_lost_tracks(self, cam_code, active_ids, grace=2.0):
         active_ids = set(map(int, active_ids))
         now = time.time()
         lost = []
@@ -367,8 +367,10 @@ class TrackEventEmitter:
                 track["last_seen"] = now
                 continue
 
-            # 2 sec grace
-            if now - track["last_seen"] < 2.0:
+            # grace: seconds a track may be absent before it is retired. The
+            # caller derives this from the tracker's track_buffer so a name is
+            # never dropped while the tracker still owns (and could recycle) the ID.
+            if now - track["last_seen"] < grace:
                 continue
 
             lost.append(tid)

@@ -1,0 +1,29 @@
+# Project-owned BoT-SORT configuration for crowd-safe person tracking.
+#
+# Loaded explicitly via model.track(..., tracker="app/camera/botsort.yaml").
+# See https://docs.ultralytics.com/modes/track/ for parameter semantics.
+#
+# The two knobs that fight crowd ID-swaps:
+#   with_reid: True        appearance (Detect-layer features) arbitrates
+#                          overlapping detections; IoU alone cannot separate
+#                          two people, and this is proven in the codebase
+#                          (app/camera/worker.py model.track call).
+#   track_buffer: 15       frames a lost track stays alive. Aligned with the
+#                          app-side grace period (worker.py computes it from
+#                          the measured frame rate) so an ID is never recycled
+#                          while its prior identity is still bound.
+
+tracker_type: botsort            # only "bytetrack" and "botsort" supported
+track_high_thresh: 0.3           # first-stage match threshold; higher = cleaner tracks
+track_low_thresh: 0.1            # second-stage low-score recovery
+new_track_thresh: 0.3            # conf to birth a new track
+track_buffer: 15                 # frames to keep a lost track alive (syncs with app TTL)
+match_thresh: 0.8                # association cost threshold
+fuse_score: True                 # fuse detection score into matching
+
+gmc_method: none                 # static cameras; sparseOptFlow costs CPU for nothing here
+
+proximity_thresh: 0.4            # min IoU for a pair to be eligible for appearance matching
+appearance_thresh: 0.7           # strength of appearance evidence vs IoU (tune on footage)
+with_reid: True                  # use detector features as appearance embedding
+model: auto                      # "auto" = reuse detection backbone (no extra download)

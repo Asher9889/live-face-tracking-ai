@@ -2,6 +2,7 @@ import os
 import threading
 import time
 import traceback
+import yaml
 import cv2
 from typing import List
 import random
@@ -45,6 +46,38 @@ FACE_OWNERSHIP_MARGIN = float(os.getenv("FACE_OWNERSHIP_MARGIN", "0.06"))
 # The expensive work is rotated round-robin across frames so per-frame cost stays
 # bounded and the preview path is never held up. 0 disables the limit.
 RECOGNIZE_TRACKS_PER_FRAME = int(os.getenv("RECOGNIZE_TRACKS_PER_FRAME", "2"))
+
+# How many already-matched tracks may be re-verified per frame. A matched identity
+# is expensive to keep checking (same ROI/face pipeline), so it is rotated.
+# 0 disables re-verification entirely.
+VERIFY_TRACKS_PER_FRAME = int(os.getenv("VERIFY_TRACKS_PER_FRAME", "1"))
+# A live face whose cosine similarity to the bound identity drops below this is
+# treated as identity churn. The bound reference is the 3-sample centroid that
+# originally matched. Matches against the employee gallery are accepted at 0.45
+# (embedding_store.find_match), so a live face still above that is the same
+# person; below it, the track probably changed owners.
+MATCH_REVERIFY_LOWER = float(os.getenv("MATCH_REVERIFY_LOWER", "0.45"))
+# Consecutive sub-threshold re-verifications before the identity is cleared.
+# Guards against one bad frame (motion blur, lighting) killing a valid label.
+MATCH_REVERIFY_CLEAR_AFTER = int(os.getenv("MATCH_REVERIFY_CLEAR_AFTER", "3"))
+
+# BoT-SORT config, project-owned. The ultralytics default is used when this is
+# blank, which means with_reid=False — exactly the blind-IoU association that
+# swaps IDs in a crowd. Passing it explicitly keeps the tracker deterministic.
+TRACKER_YAML = os.getenv("TRACKER_YAML", os.path.join(os.path.dirname(os.path.abspath(__file__)), "botsort.yaml"))
+# Person-detection confidence for the tracker (class 0 = person).
+TRACK_CONF = float(os.getenv("TRACK_CONF", "0.25"))
+# YOLO inference size for tracking. Larger catches distant faces in crowds,
+# slower on CPU. Default 640 (ultralytics default).
+TRACK_IMGSZ = int(os.getenv("TRACK_IMGSZ", "640"))
+
+# How long (seconds) the app keeps a name bound to a track ID after the tracker
+# loses it. The tracker holds lost tracks for track_buffer FRAMES (botsort yaml);
+# at real fps F that is track_buffer/F seconds. This grace must not be shorter
+# or the app retires an ID the tracker can still reactivate.
+MIN_TRACK_GRACE = float(os.getenv("MIN_TRACK_GRACE", "1.0"))
+# Extra safety margin added to the computed grace.
+TRACK_GRACE_MARGIN = float(os.getenv("TRACK_GRACE_MARGIN", "0.5"))
 
 PREVIEW_ENABLED = envConfig.PREVIEW_ENABLED
 
@@ -91,11 +124,26 @@ path = os.path.abspath(path)
 # Explicit device: ultralytics would otherwise auto-select and this is shared by
 # every camera thread, so the choice has to be visible at startup.
 YOLO_DEVICE = resolve_torch_device()
-model = YOLO("yolov8n.pt")
+# One YOLO per camera thread, created inside _camera_loop. A single shared model
+# means one shared tracker + one shared ID counter across all cameras, so frames
+# from different scenes interleave in the same Kalman filter and IDs bleed.
 insight_engine = InsightFaceEngine()
 publisher = EventPublisher(redis_client)
 face_landmarker_engine = FaceLandmarkerEngine(model_path=path)
 log_device_summary()
+
+# Track buffer from the project botsort yaml, used to align the app's name-retention
+# grace period with how long the tracker keeps a lost track alive.
+if TRACKER_YAML and os.path.isfile(TRACKER_YAML):
+    with open(TRACKER_YAML, "r") as _f:
+        _TRACK_CFG = yaml.safe_load(_f) or {}
+    TRACKER_YAML = os.path.abspath(TRACKER_YAML)
+else:
+    # No project tracker config: fall back to the ultralytics default
+    # (with_reid=False, IoU-only association).
+    _TRACK_CFG = {}
+    TRACKER_YAML = ""
+TRACK_BUFFER_FRAMES = int(_TRACK_CFG.get("track_buffer", 30))
 
 class CameraState(str, Enum):
     CONNECTING = "CONNECTING"
@@ -186,6 +234,16 @@ def _camera_loop(cam: CameraConfig) -> None:
     print(f"[Camera] Worker started → {cam.code}")
     print("🔥 RUNNING _camera_loop")
 
+    # Per-camera model. This gives each camera its own predictor, its own tracker
+    # and its own ID sequence, so one camera's frames can never leak into another
+    # camera's Kalman filter or recycle another camera's IDs.
+    model = YOLO("yolov8n.pt")
+
+    # Rotating cursor for round-robin face-pipeline scheduling.
+    recognize_cursor = 0
+    # Rotating cursor for matched-track re-verification.
+    verify_cursor = 0
+
     # target_fps = int(FRAME_RATE)
     # interval = 1.0 / target_fps
     backoff = CAPTURE_BACKOFF_INITIAL
@@ -198,6 +256,11 @@ def _camera_loop(cam: CameraConfig) -> None:
     # Display name for the preview overlay. track_identity stays the employee id
     # because that is what attendance events are keyed on.
     track_identity_name = {}
+    # The exact embedding that won the match, used as the reference for
+    # re-verification. Keyed by the same track id as track_identity.
+    track_identity_embedding = {}
+    # Consecutive re-verification failures per matched track.
+    track_reverify_fails = {}
     track_known_buffer = {}
     track_unknown_buffer = {}
     track_unknown_identity = {}
@@ -209,9 +272,6 @@ def _camera_loop(cam: CameraConfig) -> None:
     stop_event = threading.Event()
     frame_count = 0
     frame_errors = 0
-
-    # Rotating cursor for round-robin face-pipeline scheduling.
-    recognize_cursor = 0
 
     def _reader(cap):
         while not stop_event.is_set():
@@ -261,6 +321,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                 print(f"[Camera] {cam.code}: preview publishing disabled")
                 preview = None
 
+        # Real-time measure of this camera's processing rate, for TTL alignment.
+        _fps = 0.0
+        _last_ts = None
+
         # last_processed = 0.0
 
         while True:
@@ -283,6 +347,18 @@ def _camera_loop(cam: CameraConfig) -> None:
                 frame, captured_at = frame_queue.get(timeout=5)
                 if frame is None or frame.size == 0:
                     continue
+
+                # Measure the real per-camera processing rate (EMA). The BoT-SORT
+                # track buffer is expressed in FRAMES (ultralytics hardcodes
+                # frame_rate=30), so the app's name-retention grace must be
+                # track_buffer / actual_fps seconds for the two to retire an ID at
+                # the same time. Without this a name stays bound to an ID the
+                # tracker has already recycled.
+                _now = time.time()
+                if _last_ts is not None:
+                    _inst = 1.0 / max(_now - _last_ts, 1e-6)
+                    _fps = _fps * 0.9 + _inst * 0.1 if _fps > 0 else _inst
+                _last_ts = _now
             except Empty:
                 print(f"[Camera] ⚠️ No frames → {cam.code}; reconnecting")
                 # cap.release()
@@ -302,6 +378,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                 track_state.clear()
                 track_identity.clear()
                 track_identity_name.clear()
+                track_identity_embedding.clear()
+                track_reverify_fails.clear()
                 track_known_buffer.clear()
                 track_unknown_buffer.clear()
                 track_unknown_identity.clear()
@@ -317,9 +395,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                     frame,
                     persist=True,
                     classes=[0],
-                    conf=0.25,
+                    conf=TRACK_CONF,
                     verbose=False,
                     device=YOLO_DEVICE,
+                    imgsz=TRACK_IMGSZ,
+                    **({"tracker": TRACKER_YAML} if TRACKER_YAML else {}),
                 )
 
                 # A frame with nobody in it is still a frame. Detection decides only
@@ -371,8 +451,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 "label": label,
                                 "label_name": label_name,
                                 "label_confidence": confidence,
-                                # Automatic re-verification is not implemented yet;
-                                # labels persist for the life of the track.
+                                # Re-verification (STAGE 0) is active, so a label is
+                                # no longer guaranteed for the life of the track: a
+                                # track that swaps owners is cleared back to
+                                # COLLECTING_KNOWN. None means "no expiry advertised".
                                 "label_expires_at": None,
                             }
                         )
@@ -390,12 +472,24 @@ def _camera_loop(cam: CameraConfig) -> None:
                     # must not end tracks that are still on screen in the preview.
                     continue
 
-                lost = track_event_emitter.cleanup_lost_tracks(cam.code, ids.tolist())
+                # Grace for retired track IDs, aligned to the tracker's buffer:
+                # the tracker keeps a lost track alive for TRACK_BUFFER_FRAMES
+                # processing frames; at real fps F that is TRACK_BUFFER_FRAMES/F
+                # seconds. Retire the app-side identity no earlier than that, or
+                # the name detaches while the tracker still owns and can recycle
+                # the ID.
+                _grace = max(
+                    MIN_TRACK_GRACE,
+                    TRACK_BUFFER_FRAMES / max(_fps, 1.0) + TRACK_GRACE_MARGIN,
+                )
+                lost = track_event_emitter.cleanup_lost_tracks(cam.code, ids.tolist(), grace=_grace)
 
                 for tid in lost:
                     track_state.pop(tid, None)
                     track_identity.pop(tid, None)
                     track_identity_name.pop(tid, None)
+                    track_identity_embedding.pop(tid, None)
+                    track_reverify_fails.pop(tid, None)
                     track_known_buffer.pop(tid, None)
                     track_unknown_buffer.pop(tid, None)
                     track_unknown_identity.pop(tid, None)
@@ -424,6 +518,33 @@ def _camera_loop(cam: CameraConfig) -> None:
                     recognize_cursor = (start + RECOGNIZE_TRACKS_PER_FRAME) % len(eligible)
                 else:
                     process_ids = {pid for pid, _ in eligible}
+
+                # Matched tracks join the same round-robin so their identity is
+                # periodically re-verified against the embedding that won the
+                # match. A track that has silently swapped owners now gets caught
+                # instead of carrying the wrong name forever.
+                # VERIFY_TRACKS_PER_FRAME <= 0 disables re-verification outright:
+                # no matched track is ever re-processed, and labels then persist
+                # for the life of the track.
+                verify_candidates = (
+                    [
+                        (int(pid), bbox)
+                        for pid, bbox in zip(ids, boxes)
+                        if int(pid) in track_identity
+                    ]
+                    if VERIFY_TRACKS_PER_FRAME > 0
+                    else []
+                )
+                if len(verify_candidates) > VERIFY_TRACKS_PER_FRAME:
+                    start = verify_cursor % len(verify_candidates)
+                    process_ids.update(
+                        verify_candidates[(start + i) % len(verify_candidates)][0]
+                        for i in range(VERIFY_TRACKS_PER_FRAME)
+                    )
+                    verify_cursor = (start + VERIFY_TRACKS_PER_FRAME) % len(verify_candidates)
+                else:
+                    # Fewer candidates than the per-frame budget: verify them all.
+                    process_ids.update(pid for pid, _ in verify_candidates)
 
                 for person_id, bbox in zip(ids, boxes):
 
@@ -519,8 +640,13 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                         embedding = f["embedding"]
 
-                        # 🔥 GLOBAL stability check (once per loop)
-                        if not is_stable_embedding_global(track_embedding_state, person_id, embedding):
+                        # 🔥 GLOBAL stability check (once per loop).
+                        # Skipped for MATCHED_KNOWN: this gate compares against the
+                        # track's own EMA reference, which belongs to the OLD owner.
+                        # In a crowd an identity-swapped track must be allowed to
+                        # reach the re-verification stage, where it is compared to
+                        # the exact bound embedding and cleared if incongruent.
+                        if state != TrackState.MATCHED_KNOWN and not is_stable_embedding_global(track_embedding_state, person_id, embedding):
                             print(f"[{now_ms()}][Camera {cam.code}] Unstable embedding → person_id={person_id}")
                             continue
 
@@ -576,6 +702,55 @@ def _camera_loop(cam: CameraConfig) -> None:
                     pose = get_pose_name(best_face.get("pose", [None])[0]) or "unknown"
 
                     # =====================================================
+                    # 🔵 STAGE 0: RE-VERIFY (matched tracks only)
+                    #
+                    # A MATCHED_KNOWN track normally skips the face pipeline, so
+                    # its label persists forever even if the track has silently
+                    # swapped to another person (the exact source of wrong names
+                    # in a crowd). Tracks in this state run once per rotation:
+                    # the live embedding is compared to the exact centroid the
+                    # identity was matched on. Sustained divergence clears the
+                    # binding so the track re-recognises instead of carrying a
+                    # wrong name.
+                    # =====================================================
+                    if state == TrackState.MATCHED_KNOWN:
+                        ref = track_identity_embedding.get(person_id)
+                        if ref is None:
+                            continue
+                        sim = float(np.dot(embedding, ref) / (np.linalg.norm(embedding) * np.linalg.norm(ref) + 1e-9))
+                        fails = track_reverify_fails.get(person_id, 0)
+
+                        if sim >= MATCH_REVERIFY_LOWER:
+                            track_reverify_fails[person_id] = 0
+                            continue
+
+                        fails += 1
+                        track_reverify_fails[person_id] = fails
+                        log(
+                            cam, person_id, "REVERIFY",
+                            f"low sim={sim:.3f} ({fails}/{MATCH_REVERIFY_CLEAR_AFTER}) → bound={track_identity.get(person_id)}",
+                        )
+                        if fails < MATCH_REVERIFY_CLEAR_AFTER:
+                            continue
+
+                        # Identity no longer holds. Unbind and let the standard
+                        # KNOWN collection re-identify from scratch.
+                        log(
+                            cam, person_id, "REVERIFY",
+                            f"CLEAR identity={track_identity.pop(person_id, None)} "
+                            f"({track_identity_name.pop(person_id, None)})",
+                        )
+                        track_identity_embedding.pop(person_id, None)
+                        track_reverify_fails.pop(person_id, None)
+                        track_state[person_id] = TrackState.COLLECTING_KNOWN
+                        track_known_buffer.pop(person_id, None)
+                        track_unknown_buffer.pop(person_id, None)
+                        # Reset the stability reference so the next face starts a
+                        # clean re-collection instead of comparing to the old owner.
+                        track_embedding_state.pop(person_id, None)
+                        continue
+
+                    # =====================================================
                     # 🔵 STAGE 1: KNOWN
                     # =====================================================
                     if state == TrackState.COLLECTING_KNOWN:
@@ -617,6 +792,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                             track_identity[person_id] = match["employee_id"]
                             track_identity_name[person_id] = match["name"]
                             track_state[person_id] = TrackState.MATCHED_KNOWN
+                            # Binding reference for re-verification: this exact
+                            # centroid is what the identity was matched on.
+                            track_identity_embedding[person_id] = final
+                            track_reverify_fails[person_id] = 0
 
                             track_event_emitter.recognition_confirmed(
                                 cam.code,
