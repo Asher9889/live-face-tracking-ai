@@ -155,6 +155,51 @@ def log(cam, person_id, stage, msg):
     print(f"[{now_ms()}][Camera {cam.code}][Person {person_id}][{stage}] {msg}")
 
 
+def format_unknown_label(unknown_id) -> str:
+    """
+    Human-readable label for an unidentified person: "Unknown ab12".
+
+    The full unknown_id stays in the payload's `label` field; this only produces
+    the short suffix that is safe to put on screen. The id format comes from the
+    Node API, so it is not assumed to be hex, digits, or fixed length:
+      - alphanumeric characters are taken from the END of the id, since that is
+        where a uuid/ObjectId carries its random entropy
+      - a pure-digit id is read from the end as digits
+      - anything that leaves too little usable signal falls back to "Unknown"
+    """
+    if unknown_id is None:
+        return "Unknown"
+
+    s = str(unknown_id).strip()
+    if not s:
+        return "Unknown"
+
+    # Trailing alphanumeric run, ignoring separators like "-" in a uuid.
+    tail = ""
+    for ch in reversed(s):
+        if ch.isalnum():
+            tail = ch + tail
+            if len(tail) == 4:
+                break
+        else:
+            break
+
+    if not tail:
+        return "Unknown"
+
+    # A 4-char tail that is all one repeated character carries no information
+    # (e.g. a uuid ending in "0000"), so widen the window instead of showing it.
+    if len(tail) == 4 and len(set(tail)) == 1:
+        wider = "".join(ch for ch in reversed(s) if ch.isalnum())[:8]
+        tail = wider[-4:] if len(wider) >= 4 else wider
+
+    # Too weak to distinguish anyone (all zeros/ones); not worth showing.
+    if len(set(tail)) < 2:
+        return "Unknown"
+
+    return f"Unknown {tail.upper()}"
+
+
 def pick_track_face(faces, person_bbox, cam, person_id):
     """
     Reduce a multi-face person ROI to the single face owned by this track.
@@ -437,9 +482,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                             confidence = 1.0
                         elif pid in track_unknown_identity:
                             label = track_unknown_identity[pid]
-                            # Unidentified people have no name, and the synthetic
-                            # uuid is meaningless to read, so show a plain label.
-                            label_name = "Unknown"
+                            # Unidentified people have no name, and the raw uuid is
+                            # meaningless to read, so show a short distinguishing
+                            # suffix instead. The full id stays in `label`.
+                            label_name = format_unknown_label(label)
                             confidence = 0.9
 
                         raw_state = track_state.get(pid)
