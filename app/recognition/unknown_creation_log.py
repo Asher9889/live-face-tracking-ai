@@ -150,14 +150,25 @@ def face_metrics(analysis, quality, final_quality, best_face_width=None):
         except (TypeError, ValueError):
             return None
 
+    contrast = num("iris_contrast_min")
+    core = num("iris_core_brightness")
+    if contrast is not None and core and core > 0:
+        iris_contrast_ratio = round(contrast / core, 4)
+    else:
+        iris_contrast_ratio = None
+
     return {
         "eye_sharpness": num("eye_sharpness"),
         # Iris-presence signals. iris_contrast is the gate candidate: it is the
         # weaker of the two eyes, and reads near zero when an eye is closed, turned
-        # away, or occluded. Logged only for now — no threshold is enforced.
-        "iris_contrast": num("iris_contrast_min"),
+        # away, or occluded.
+        "iris_contrast": contrast,
+        # Raw contrast scales with scene exposure, so it is not comparable
+        # between cameras. The ratio is the scale-free form and is what the
+        # registration gate tests.
+        "iris_contrast_ratio": iris_contrast_ratio,
         "iris_contrast_mean": num("iris_contrast_mean"),
-        "iris_core_brightness": num("iris_core_brightness"),
+        "iris_core_brightness": core,
         "iris_radius": num("iris_radius"),
         "eye_aperture": num("eye_aperture"),
         "blur": num("blur"),

@@ -939,12 +939,82 @@ def _camera_loop(cam: CameraConfig) -> None:
                             )
                             continue
 
+                        # ---------------- EYE VISIBILITY ---------------- #
+                        # An unknown is only useful if we can actually see both
+                        # eyes, otherwise the embedding encodes a profile or a
+                        # blur. eye_sharpness alone was not enough (it barely
+                        # separates the confirmed-noise registrations from good
+                        # matches), so the gate is on iris visibility.
+                        #
+                        # iris_contrast is a raw brightness difference, which
+                        # scales with scene exposure and therefore is not
+                        # comparable across cameras. Dividing by the iris core
+                        # brightness makes it a relative measure: how much darker
+                        # the pupil is than the ring around it.
+                        core = analysis.get("iris_core_brightness")
+                        contrast = analysis.get("iris_contrast_min")
+                        if core and core > 0 and contrast is not None:
+                            iris_ratio = contrast / core
+                        else:
+                            iris_ratio = None
+
+                        eye_dist_ratio = analysis.get("eye_dist_ratio")
+                        yaw = abs(analysis.get("yaw")) if analysis.get("yaw") is not None else None
+                        min_iris_ratio = envConfig.MIN_UNKNOWN_IRIS_CONTRAST_RATIO
+                        min_eye_dist = envConfig.MIN_UNKNOWN_EYE_DIST_RATIO
+                        max_yaw = envConfig.MAX_UNKNOWN_REG_YAW
+
+                        if envConfig.ENFORCE_UNKNOWN_EYE_VISIBILITY:
+                            reasons = []
+                            if yaw is not None and yaw > max_yaw:
+                                reasons.append(("yaw", yaw, max_yaw))
+                            if iris_ratio is not None and iris_ratio < min_iris_ratio:
+                                reasons.append(("iris_contrast_ratio", iris_ratio, min_iris_ratio))
+                            elif iris_ratio is None:
+                                # Cannot confirm the iris is visible, so it cannot
+                                # be confirmed as suitable for registration.
+                                reasons.append(("iris_contrast_ratio", None, min_iris_ratio))
+                            if eye_dist_ratio is not None and eye_dist_ratio < min_eye_dist:
+                                reasons.append(("eye_dist_ratio", eye_dist_ratio, min_eye_dist))
+                            elif eye_dist_ratio is None:
+                                reasons.append(("eye_dist_ratio", None, min_eye_dist))
+
+                            if reasons:
+                                detail = ", ".join(
+                                    f"{name}={value}" + (f" > {limit}" if name == "yaw" else f" < {limit}")
+                                    for name, value, limit in reasons
+                                )
+                                log(cam, person_id, "UNKNOWN", f"REJECT eyes not visible: {detail}")
+                                for name, value, limit in reasons:
+                                    log_unknown_decision(
+                                        "unknown_rejected",
+                                        cam.code,
+                                        person_id,
+                                        reason=name,
+                                        threshold=limit,
+                                        measured=value,
+                                        **face_metrics(
+                                            analysis, quality, final_quality, best_face_width
+                                        ),
+                                    )
+                                continue
+
                         buffer = track_unknown_buffer.get(person_id, [])
 
                         # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
                         #     continue
 
-                        buffer = builder.add(buffer, embedding, quality, pose, img=face_img)
+                        # Rank buffered frames by how visible the eyes are, so the
+                        # single frame we eventually store is the best look at this
+                        # person rather than merely the highest-quality one.
+                        buffer = builder.add(
+                            buffer,
+                            embedding,
+                            quality,
+                            pose,
+                            img=face_img,
+                            eye_quality=iris_ratio,
+                        )
                         track_unknown_buffer[person_id] = buffer
 
                         if not builder.is_ready(buffer):

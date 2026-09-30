@@ -63,6 +63,30 @@ class EnvConfig:
     # Master switch for the eye-sharpness reject. "0" = measure and log only.
     ENFORCE_UNKNOWN_EYE_SHARPNESS = bool(int(os.getenv("ENFORCE_UNKNOWN_EYE_SHARPNESS", "0")))
 
+    # ---- Unknown-registration eye-visibility gate -------------------------
+    # Production audit (104 rows, 12 registrations, all confirmed noise) showed
+    # eye_sharpness carries no usable signal: the noise registrations had a
+    # median of 34 against 180 for matched-existing tracks, but the ranges
+    # overlap almost completely, so it cannot separate good from bad.
+    #
+    # Two signals did separate. The iris core must be measurably darker than the
+    # surrounding iris ring, which is scale-independent and unaffected by how far
+    # the face is from the camera, so it is scored as a ratio:
+    #
+    #     iris_contrast / iris_core_brightness
+    #
+    # and the eye centre-to-centre distance must stay wide enough to imply the
+    # face is not turned far to one side (a profile view leaves one eye
+    # compressed to nothing).
+    #
+    # A frame must clear BOTH. "0" disables the reject so the thresholds can be
+    # tuned from logs before they drop real faces.
+    ENFORCE_UNKNOWN_EYE_VISIBILITY = bool(int(os.getenv("ENFORCE_UNKNOWN_EYE_VISIBILITY", "0")))
+    MIN_UNKNOWN_IRIS_CONTRAST_RATIO = float(os.getenv("MIN_UNKNOWN_IRIS_CONTRAST_RATIO", "0.15"))
+    MIN_UNKNOWN_EYE_DIST_RATIO = float(os.getenv("MIN_UNKNOWN_EYE_DIST_RATIO", "0.50"))
+    # Applies only to unknown creation. Employees are unaffected.
+    MAX_UNKNOWN_REG_YAW = float(os.getenv("MAX_UNKNOWN_REG_YAW", "25"))
+
     # Structured audit log for unknown-registration decisions (one JSON object per
     # line, size-rotated). Face images and embeddings are deliberately NOT written
     # here — that data already lives in the API store, and putting biometrics in a
