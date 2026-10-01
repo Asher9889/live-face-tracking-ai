@@ -62,6 +62,13 @@ MATCH_REVERIFY_LOWER = float(os.getenv("MATCH_REVERIFY_LOWER", "0.45"))
 # Guards against one bad frame (motion blur, lighting) killing a valid label.
 MATCH_REVERIFY_CLEAR_AFTER = int(os.getenv("MATCH_REVERIFY_CLEAR_AFTER", "3"))
 
+# UNRECOGNIZED_KNOWN: extra frames to retry matching before falling to UNKNOWN.
+# When KNOWN collection fails (no match after 3 frames), instead of immediately
+# becoming UNKNOWN (stricter gates), the track enters this retry buffer.
+# Each frame re-runs find_match(). If matched → MATCHED_KNOWN restored.
+# If all frames exhausted → COLLECTING_UNKNOWN (genuine unknown).
+UNRECOGNIZED_MAX_FRAMES = int(os.getenv("UNRECOGNIZED_MAX_FRAMES", "5"))
+
 # BoT-SORT config, project-owned. The ultralytics default is used when this is
 # blank, which means with_reid=False — exactly the blind-IoU association that
 # swaps IDs in a crowd. Passing it explicitly keeps the tracker deterministic.
@@ -308,6 +315,7 @@ def _camera_loop(cam: CameraConfig) -> None:
     # Consecutive re-verification failures per matched track.
     track_reverify_fails = {}
     track_known_buffer = {}
+    track_unrecognized_buffer = {}  # {pid: [{"embedding", "quality", "pose", "img", "ts", "frame_count"}]}
     track_unknown_buffer = {}
     track_unknown_identity = {}
     track_unknown_meta = {}
@@ -538,6 +546,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_identity_embedding.pop(tid, None)
                     track_reverify_fails.pop(tid, None)
                     track_known_buffer.pop(tid, None)
+                    track_unrecognized_buffer.pop(tid, None)
                     track_unknown_buffer.pop(tid, None)
                     track_unknown_identity.pop(tid, None)
                     track_unknown_meta.pop(tid, None)
@@ -794,6 +803,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         track_reverify_fails.pop(person_id, None)
                         track_state[person_id] = TrackState.COLLECTING_KNOWN
                         track_known_buffer.pop(person_id, None)
+                        track_unrecognized_buffer.pop(person_id, None)
                         track_unknown_buffer.pop(person_id, None)
                         # Reset the stability reference so the next face starts a
                         # clean re-collection instead of comparing to the old owner.
@@ -858,32 +868,82 @@ def _camera_loop(cam: CameraConfig) -> None:
                             track_known_buffer.pop(person_id, None)
                             continue
 
-                        # move to unknown
-                        track_state[person_id] = TrackState.COLLECTING_UNKNOWN
-                        track_unknown_buffer[person_id] = [
+                        # move to UNRECOGNIZED_KNOWN retry buffer instead of immediate UNKNOWN
+                        track_state[person_id] = TrackState.UNRECOGNIZED_KNOWN
+                        track_unrecognized_buffer[person_id] = [
                             x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
                         ]
                         track_known_buffer.pop(person_id, None)
 
-                        log(cam, person_id, "STATE", "→ COLLECTING_UNKNOWN")
-                        # These samples were accepted during the KNOWN stage, before
-                        # the unknown gate could see them. Log them so a future
-                        # eye-sharpness reject can be evaluated against the real
-                        # values that would have been dropped, not just the ones
-                        # arriving after this point.
-                        log_unknown_decision(
-                            "unknown_buffer_seeded",
-                            cam.code,
-                            person_id,
-                            role=cam.camera_role,
-                            buffer_size=len(track_unknown_buffer[person_id]),
-                            **face_metrics(
-                                analysis,
-                                quality,
-                                final_quality,
-                                best_face_width,
-                            ),
-                        )
+                        log(cam, person_id, "STATE", f"→ UNRECOGNIZED_KNOWN (retry frames={UNRECOGNIZED_MAX_FRAMES})")
+                        continue
+
+                    # =====================================================
+                    # 🔵 STAGE 1.5: UNRECOGNIZED_KNOWN — retry buffer before UNKNOWN
+                    # =====================================================
+                    elif state == TrackState.UNRECOGNIZED_KNOWN:
+                        buffer = track_unrecognized_buffer.get(person_id, [])
+                        buffer.append({
+                            "embedding": embedding,
+                            "quality": quality,
+                            "pose": pose,
+                            "img": face_img,
+                            "ts": time.time()
+                        })
+                        track_unrecognized_buffer[person_id] = buffer
+
+                        # Try match on every frame in this buffer
+                        if len(buffer) >= 2:  # need at least 2 for weighted avg
+                            emb = np.array([x["embedding"] for x in buffer])
+                            w = np.array([x["quality"] for x in buffer])
+                            final = np.average(emb, axis=0, weights=w)
+                            final /= np.linalg.norm(final)
+
+                            match = embedding_store.find_match(final)
+                            if match:
+                                track_identity[person_id] = match["employee_id"]
+                                track_identity_name[person_id] = match["name"]
+                                track_state[person_id] = TrackState.MATCHED_KNOWN
+                                track_identity_embedding[person_id] = final
+                                track_reverify_fails[person_id] = 0
+
+                                track_event_emitter.recognition_confirmed(
+                                    cam.code,
+                                    person_id,
+                                    match["employee_id"],
+                                    match["similarity"]
+                                )
+
+                                log(cam, person_id, "UNRECOGNIZED", f"RECOVERED → MATCHED_KNOWN {match['employee_id']} after {len(buffer)} retry frames")
+                                track_unrecognized_buffer.pop(person_id, None)
+                                continue
+
+                        # Check if max retry frames exhausted
+                        if len(buffer) >= UNRECOGNIZED_MAX_FRAMES:
+                            track_state[person_id] = TrackState.COLLECTING_UNKNOWN
+                            track_unknown_buffer[person_id] = [
+                                x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
+                            ]
+                            track_unrecognized_buffer.pop(person_id, None)
+
+                            log(cam, person_id, "STATE", f"→ COLLECTING_UNKNOWN after {UNRECOGNIZED_MAX_FRAMES} unrecognized frames")
+                            # Log the seeding decision
+                            log_unknown_decision(
+                                "unknown_buffer_seeded",
+                                cam.code,
+                                person_id,
+                                role=cam.camera_role,
+                                buffer_size=len(track_unknown_buffer[person_id]),
+                                **face_metrics(
+                                    analysis,
+                                    quality,
+                                    final_quality,
+                                    best_face_width,
+                                ),
+                            )
+                            continue
+
+                        # Still within retry budget — keep collecting
                         continue
 
                     # =====================================================
