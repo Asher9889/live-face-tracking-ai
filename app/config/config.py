@@ -59,9 +59,10 @@ class EnvConfig:
     # NOT YET ACTIVE as a reject: the value is measured and logged only, so a real
     # distribution can be observed before it starts dropping faces. See
     # UNKNOWN_CREATION_LOG_PATH and ENFORCE_UNKNOWN_EYE_SHARPNESS below.
-    MIN_UNKNOWN_EYE_SHARPNESS = int(os.getenv("MIN_UNKNOWN_EYE_SHARPNESS", "1000"))
+    MIN_UNKNOWN_EYE_SHARPNESS = int(os.getenv("MIN_UNKNOWN_EYE_SHARPNESS", "200"))
     # Master switch for the eye-sharpness reject. "0" = measure and log only.
-    ENFORCE_UNKNOWN_EYE_SHARPNESS = bool(int(os.getenv("ENFORCE_UNKNOWN_EYE_SHARPNESS", "0")))
+    ENFORCE_UNKNOWN_EYE_SHARPNESS = os.getenv("ENFORCE_UNKNOWN_EYE_SHARPNESS", "true").lower() in ("1","true","yes")  # was false
+
 
     # ---- Unknown-registration eye-visibility gate -------------------------
     # Production audit (104 rows, 12 registrations, all confirmed noise) showed
@@ -81,7 +82,8 @@ class EnvConfig:
     #
     # A frame must clear BOTH. "0" disables the reject so the thresholds can be
     # tuned from logs before they drop real faces.
-    ENFORCE_UNKNOWN_EYE_VISIBILITY = bool(int(os.getenv("ENFORCE_UNKNOWN_EYE_VISIBILITY", "0")))
+    # ENFORCE_UNKNOWN_EYE_VISIBILITY = bool(int(os.getenv("ENFORCE_UNKNOWN_EYE_VISIBILITY", "0")))
+    ENFORCE_UNKNOWN_EYE_VISIBILITY = os.getenv("ENFORCE_UNKNOWN_EYE_VISIBILITY", "true").lower() in ("1","true","yes")  # was fals
     MIN_UNKNOWN_IRIS_CONTRAST_RATIO = float(os.getenv("MIN_UNKNOWN_IRIS_CONTRAST_RATIO", "0.15"))
     MIN_UNKNOWN_EYE_DIST_RATIO = float(os.getenv("MIN_UNKNOWN_EYE_DIST_RATIO", "0.50"))
     # Applies only to unknown creation. Employees are unaffected.
