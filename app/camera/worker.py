@@ -69,6 +69,13 @@ MATCH_REVERIFY_CLEAR_AFTER = int(os.getenv("MATCH_REVERIFY_CLEAR_AFTER", "3"))
 # If all frames exhausted → COLLECTING_UNKNOWN (genuine unknown).
 UNRECOGNIZED_MAX_FRAMES = int(os.getenv("UNRECOGNIZED_MAX_FRAMES", "5"))
 
+# COLLECTING_KNOWN: if face crop 10-30px, upscale to 30px for recognition.
+# Gives known employees at distance a chance to be matched.
+COLLECT_UPSCALE_TARGET = int(os.getenv("COLLECT_UPSCALE_TARGET", "30"))
+COLLECT_MIN_UPSCALE_SRC = int(os.getenv("COLLECT_MIN_UPSCALE_SRC", "10"))
+# Consecutive frames with same match on upscaled face to confirm.
+COLLECT_CONFIRM_FRAMES = int(os.getenv("COLLECT_CONFIRM_FRAMES", "4"))
+
 # BoT-SORT config, project-owned. The ultralytics default is used when this is
 # blank, which means with_reid=False — exactly the blind-IoU association that
 # swaps IDs in a crowd. Passing it explicitly keeps the tracker deterministic.
@@ -321,6 +328,9 @@ def _camera_loop(cam: CameraConfig) -> None:
     track_unknown_meta = {}
     track_embedding_state = {}
 
+    # For upscaled collection: {pid: {"matched_id": emp_id, "count": n, "frames": [...]}}
+    track_upscale_collect = {}
+
     # For RTSP Thread
     frame_queue = Queue(maxsize=1)
     stop_event = threading.Event()
@@ -545,12 +555,14 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_identity_name.pop(tid, None)
                     track_identity_embedding.pop(tid, None)
                     track_reverify_fails.pop(tid, None)
+                    track_matched_drop_fails.pop(tid, None)
                     track_known_buffer.pop(tid, None)
                     track_unrecognized_buffer.pop(tid, None)
                     track_unknown_buffer.pop(tid, None)
                     track_unknown_identity.pop(tid, None)
                     track_unknown_meta.pop(tid, None)
                     track_embedding_state.pop(tid, None)
+                    track_upscale_collect.pop(tid, None)
 
                 # ---------------------------------------------------------------
                 # FACE PIPELINE SCHEDULING
@@ -811,72 +823,118 @@ def _camera_loop(cam: CameraConfig) -> None:
                         continue
 
                     # =====================================================
-                    # 🔵 STAGE 1: KNOWN
+                    # 🔵 STAGE 1: KNOWN — WITH UPSCALE FOR SMALL FACES
                     # =====================================================
                     if state == TrackState.COLLECTING_KNOWN:
 
-                        # stability ONLY here
-                        # if not is_stable_embedding(track_embedding_state, person_id, embedding, quality):
-                        #     log(cam, person_id, "STABILITY", "REJECTED")
-                        #     continue
+                        # --- UPSCALE SMALL FACES (10-30px → 30px) ---
+                        upscaled = False
+                        if best_face_width < COLLECT_UPSCALE_TARGET and best_face_width >= COLLECT_MIN_UPSCALE_SRC:
+                            scale = COLLECT_UPSCALE_TARGET / best_face_width
+                            new_w = int((bx2 - bx1) * scale)
+                            new_h = int((by2 - by1) * scale)
+                            face_img_up = cv2.resize(face_img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+                            
+                            # Re-extract embedding from upscaled face
+                            faces_up = insight_engine.detect_and_generate_embedding(face_img_up, (0, 0), cam.code)
+                            if faces_up:
+                                emb_up = faces_up[0]["embedding"]
+                                embedding = emb_up
+                                upscaled = True
+                                log(cam, person_id, "UPSCALE", f"{best_face_width}px → {new_w}px for collection")
 
-                        buffer = track_known_buffer.get(person_id, [])
-                        buffer.append({
-                            "embedding": embedding,
-                            "quality": quality,
-                            "pose_bucket": pose,
-                            "img": face_img,
-                            "ts": time.time()
-                        })
-
-                        buffer = sorted(buffer, key=lambda x: x["quality"], reverse=True)[:3]
-                        track_known_buffer[person_id] = buffer
-
-                        log(cam, person_id, "KNOWN", f"buffer_size={len(buffer)}")
-
-                        if len(buffer) < 3:
-                            continue
-
-                        # combine
-                        emb = np.array([x["embedding"] for x in buffer])
-                        w = np.array([x["quality"] for x in buffer])
-                        final = np.average(emb, axis=0, weights=w)
-                        final /= np.linalg.norm(final)
-
-                        log(cam, person_id, "KNOWN", "RUN MATCH")
-                        match = embedding_store.find_match(final)
-
-                        log(cam, person_id, "KNOWN", f"MATCH RESULT → {match['employee_id'] if match else 'NO MATCH'}")
+                        # Try match on (possibly upscaled) embedding
+                        match = embedding_store.find_match(embedding)
 
                         if match:
-                            track_identity[person_id] = match["employee_id"]
-                            track_identity_name[person_id] = match["name"]
-                            track_state[person_id] = TrackState.MATCHED_KNOWN
-                            # Binding reference for re-verification: this exact
-                            # centroid is what the identity was matched on.
-                            track_identity_embedding[person_id] = final
-                            track_reverify_fails[person_id] = 0
+                            emp_id = match["employee_id"]
+                            uc = track_upscale_collect.get(person_id, {"matched_id": None, "count": 0, "frames": []})
+                            
+                            if uc["matched_id"] == emp_id:
+                                uc["count"] += 1
+                                uc["frames"].append(embedding)
+                            else:
+                                uc["matched_id"] = emp_id
+                                uc["count"] = 1
+                                uc["frames"] = [embedding]
+                            
+                            track_upscale_collect[person_id] = uc
 
-                            track_event_emitter.recognition_confirmed(
-                                cam.code,
-                                person_id,
-                                match["employee_id"],
-                                match["similarity"]
-                            )
+                            # Check confirmation
+                            if uc["count"] >= COLLECT_CONFIRM_FRAMES:
+                                # 4 consecutive frames matched same person → CONFIRMED
+                                track_identity[person_id] = emp_id
+                                track_identity_name[person_id] = match["name"]
+                                track_state[person_id] = TrackState.MATCHED_KNOWN
+                                # Use the last upscaled embedding as reference
+                                track_identity_embedding[person_id] = uc["frames"][-1]
+                                track_reverify_fails[person_id] = 0
+                                track_matched_drop_fails.pop(person_id, None)
+                                track_upscale_collect.pop(person_id, None)
+                                track_known_buffer.pop(person_id, None)
 
-                            log(cam, person_id, "KNOWN", f"MATCHED → {match['employee_id']}")
-                            track_known_buffer.pop(person_id, None)
+                                track_event_emitter.recognition_confirmed(
+                                    cam.code, person_id, emp_id, match["similarity"]
+                                )
+                                log(cam, person_id, "UPSCALE", f"CONFIRMED → MATCHED_KNOWN {emp_id} after {uc['count']} frames")
+                                continue
+
+                            # Matched but not yet confirmed — keep collecting
                             continue
 
-                        # move to UNRECOGNIZED_KNOWN retry buffer instead of immediate UNKNOWN
-                        track_state[person_id] = TrackState.UNRECOGNIZED_KNOWN
-                        track_unrecognized_buffer[person_id] = [
-                            x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
-                        ]
-                        track_known_buffer.pop(person_id, None)
+                        # --- NO MATCH on this frame ---
+                        if upscaled:
+                            # Was upscaled but no match: reset counter
+                            track_upscale_collect.pop(person_id, None)
+                        else:
+                            # Normal size face but no match: original COLLECTING_KNOWN logic
+                            buffer = track_known_buffer.get(person_id, [])
+                            buffer.append({
+                                "embedding": embedding,
+                                "quality": quality,
+                                "pose_bucket": pose,
+                                "img": face_img,
+                                "ts": time.time()
+                            })
+                            buffer = sorted(buffer, key=lambda x: x["quality"], reverse=True)[:3]
+                            track_known_buffer[person_id] = buffer
 
-                        log(cam, person_id, "STATE", f"→ UNRECOGNIZED_KNOWN (retry frames={UNRECOGNIZED_MAX_FRAMES})")
-                        continue
+                            if len(buffer) < 3:
+                                continue
+
+                            # Original 3-frame centroid match
+                            emb = np.array([x["embedding"] for x in buffer])
+                            w = np.array([x["quality"] for x in buffer])
+                            final = np.average(emb, axis=0, weights=w)
+                            final /= np.linalg.norm(final)
+
+                            match = embedding_store.find_match(final)
+                            if match:
+                                track_identity[person_id] = match["employee_id"]
+                                track_identity_name[person_id] = match["name"]
+                                track_state[person_id] = TrackState.MATCHED_KNOWN
+                                track_identity_embedding[person_id] = final
+                                track_reverify_fails[person_id] = 0
+                                track_known_buffer.pop(person_id, None)
+
+                                track_event_emitter.recognition_confirmed(
+                                    cam.code,
+                                    person_id,
+                                    match["employee_id"],
+                                    match["similarity"]
+                                )
+                                log(cam, person_id, "KNOWN", f"MATCHED → {match['employee_id']}")
+                                continue
+
+                            # Original fallback to UNRECOGNIZED_KNOWN
+                            track_state[person_id] = TrackState.UNRECOGNIZED_KNOWN
+                            track_unrecognized_buffer[person_id] = [
+                                x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
+                            ]
+                            track_known_buffer.pop(person_id, None)
+
+                            log(cam, person_id, "STATE", f"→ UNRECOGNIZED_KNOWN (retry frames={UNRECOGNIZED_MAX_FRAMES})")
+                            continue
 
                     # =====================================================
                     # 🔵 STAGE 1.5: UNRECOGNIZED_KNOWN — retry buffer before UNKNOWN
