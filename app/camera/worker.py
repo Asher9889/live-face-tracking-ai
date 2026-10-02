@@ -767,7 +767,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     if best_face is None:
                         continue
 
-                    bx1, _, bx2, _ = map(int, best_face["bbox"])
+                    bx1, by1, bx2, by2 = map(int, best_face["bbox"])
                     best_face_width = bx2 - bx1
 
                     embedding = best_face["embedding"]
