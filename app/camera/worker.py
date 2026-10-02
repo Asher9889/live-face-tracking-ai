@@ -555,7 +555,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_identity_name.pop(tid, None)
                     track_identity_embedding.pop(tid, None)
                     track_reverify_fails.pop(tid, None)
-                    track_matched_drop_fails.pop(tid, None)
                     track_known_buffer.pop(tid, None)
                     track_unrecognized_buffer.pop(tid, None)
                     track_unknown_buffer.pop(tid, None)
@@ -877,7 +876,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 # Use the last upscaled embedding as reference
                                 track_identity_embedding[person_id] = uc["frames"][-1]
                                 track_reverify_fails[person_id] = 0
-                                track_matched_drop_fails.pop(person_id, None)
                                 track_upscale_collect.pop(person_id, None)
                                 track_known_buffer.pop(person_id, None)
 
