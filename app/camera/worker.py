@@ -678,7 +678,15 @@ def _camera_loop(cam: CameraConfig) -> None:
                         required_min_width = envConfig.MIN_UNKNOWN_REG_FACE_WIDTH
 
                     for f in faces:
-                        filter_result = fast_filter(f, min_width=required_min_width)
+                        # For COLLECTING_KNOWN, compute face width from bbox for upscale check
+                        face_min_width = required_min_width
+                        if state == TrackState.COLLECTING_KNOWN:
+                            fx1, fy1, fx2, fy2 = map(int, f["bbox"])
+                            face_w = fx2 - fx1
+                            if face_w < COLLECT_UPSCALE_TARGET and face_w >= COLLECT_MIN_UPSCALE_SRC:
+                                face_min_width = COLLECT_MIN_UPSCALE_SRC
+
+                        filter_result = fast_filter(f, min_width=face_min_width)
 
                         if isinstance(filter_result, dict) and not filter_result.get("status", False):
                             reason = filter_result.get("reason", "unknown")
