@@ -76,6 +76,11 @@ COLLECT_MIN_UPSCALE_SRC = int(os.getenv("COLLECT_MIN_UPSCALE_SRC", "10"))
 # Consecutive frames with same match on upscaled face to confirm.
 COLLECT_CONFIRM_FRAMES = int(os.getenv("COLLECT_CONFIRM_FRAMES", "4"))
 
+# UNKNOWN: max consecutive quality gate failures before forcing creation.
+# If quality gates (eye sharpness, eye visibility) keep rejecting, we still
+# create the unknown after this many attempts so the UI doesn't show "5/5" forever.
+UNKNOWN_FORCE_CREATE_AFTER = int(os.getenv("UNKNOWN_FORCE_CREATE_AFTER", "3"))
+
 # BoT-SORT config, project-owned. The ultralytics default is used when this is
 # blank, which means with_reid=False — exactly the blind-IoU association that
 # swaps IDs in a crowd. Passing it explicitly keeps the tracker deterministic.
@@ -331,6 +336,10 @@ def _camera_loop(cam: CameraConfig) -> None:
     # For upscaled collection: {pid: {"matched_id": emp_id, "count": n, "frames": [...]}}
     track_upscale_collect = {}
 
+    # Consecutive unknown quality gate failures per track.
+    # After UNKNOWN_FORCE_CREATE_AFTER consecutive failures, force creation.
+    track_unknown_quality_fails = {}
+
     # For RTSP Thread
     frame_queue = Queue(maxsize=1)
     stop_event = threading.Event()
@@ -566,6 +575,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     track_unknown_meta.pop(tid, None)
                     track_embedding_state.pop(tid, None)
                     track_upscale_collect.pop(tid, None)
+                    track_unknown_quality_fails.pop(tid, None)
 
                 # ---------------------------------------------------------------
                 # FACE PIPELINE SCHEDULING
@@ -1065,7 +1075,14 @@ def _camera_loop(cam: CameraConfig) -> None:
                                     analysis, quality, final_quality, best_face_width
                                 ),
                             )
-                            continue
+                            # Track consecutive quality gate failures
+                            fails = track_unknown_quality_fails.get(person_id, 0) + 1
+                            track_unknown_quality_fails[person_id] = fails
+                            if fails >= UNKNOWN_FORCE_CREATE_AFTER:
+                                log(cam, person_id, "UNKNOWN", f"FORCE CREATE after {fails} consecutive quality gate failures")
+                                # Fall through to creation logic below
+                            else:
+                                continue
 
                         # ---------------- EYE VISIBILITY ---------------- #
                         # An unknown is only useful if we can actually see both
@@ -1125,7 +1142,14 @@ def _camera_loop(cam: CameraConfig) -> None:
                                             analysis, quality, final_quality, best_face_width
                                         ),
                                     )
-                                continue
+                                # Track consecutive quality gate failures
+                                fails = track_unknown_quality_fails.get(person_id, 0) + 1
+                                track_unknown_quality_fails[person_id] = fails
+                                if fails >= UNKNOWN_FORCE_CREATE_AFTER:
+                                    log(cam, person_id, "UNKNOWN", f"FORCE CREATE after {fails} consecutive quality gate failures")
+                                    # Fall through to creation logic below
+                                else:
+                                    continue
 
                         buffer = track_unknown_buffer.get(person_id, [])
 
@@ -1234,6 +1258,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         track_unknown_identity[person_id] = unknown_id
                         track_state[person_id] = TrackState.UPDATING_UNKNOWN
                         track_unknown_meta[person_id] = {"pose_best": {}, "last_update": 0}
+                        track_unknown_quality_fails.pop(person_id, None)
 
                         # log(cam, person_id, "STATE", "→ UPDATING_UNKNOWN")
                         track_event_emitter.unknown_confirmed(cam.code, person_id, unknown_id)

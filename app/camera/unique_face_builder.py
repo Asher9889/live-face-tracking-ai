@@ -50,7 +50,7 @@ class UniqueFaceRepresentationBuilder:
         # ----------------------------
 
         # 1. SAME POSE → replace best
-        same_pose_items = [i for i, item in enumerate(buffer) if item["pose_bucket"] == pose_bucket]
+        same_pose_items = [i for i, item in enumerate(buffer) if item.get("pose_bucket") == pose_bucket]
 
         if same_pose_items:
             best_idx = max(

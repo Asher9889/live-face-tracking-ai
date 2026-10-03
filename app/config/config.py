@@ -59,9 +59,9 @@ class EnvConfig:
     # NOT YET ACTIVE as a reject: the value is measured and logged only, so a real
     # distribution can be observed before it starts dropping faces. See
     # UNKNOWN_CREATION_LOG_PATH and ENFORCE_UNKNOWN_EYE_SHARPNESS below.
-    MIN_UNKNOWN_EYE_SHARPNESS = int(os.getenv("MIN_UNKNOWN_EYE_SHARPNESS", "200"))
+    MIN_UNKNOWN_EYE_SHARPNESS = int(os.getenv("MIN_UNKNOWN_EYE_SHARPNESS", "50"))  # was 200
     # Master switch for the eye-sharpness reject. "0" = measure and log only.
-    ENFORCE_UNKNOWN_EYE_SHARPNESS = os.getenv("ENFORCE_UNKNOWN_EYE_SHARPNESS", "true").lower() in ("1","true","yes")  # was false
+    ENFORCE_UNKNOWN_EYE_SHARPNESS = os.getenv("ENFORCE_UNKNOWN_EYE_SHARPNESS", "true").lower() in ("1","true","yes")
 
 
     # ---- Unknown-registration eye-visibility gate -------------------------
@@ -83,11 +83,11 @@ class EnvConfig:
     # A frame must clear BOTH. "0" disables the reject so the thresholds can be
     # tuned from logs before they drop real faces.
     # ENFORCE_UNKNOWN_EYE_VISIBILITY = bool(int(os.getenv("ENFORCE_UNKNOWN_EYE_VISIBILITY", "0")))
-    ENFORCE_UNKNOWN_EYE_VISIBILITY = os.getenv("ENFORCE_UNKNOWN_EYE_VISIBILITY", "true").lower() in ("1","true","yes")  # was fals
-    MIN_UNKNOWN_IRIS_CONTRAST_RATIO = float(os.getenv("MIN_UNKNOWN_IRIS_CONTRAST_RATIO", "0.15"))
-    MIN_UNKNOWN_EYE_DIST_RATIO = float(os.getenv("MIN_UNKNOWN_EYE_DIST_RATIO", "0.50"))
+    ENFORCE_UNKNOWN_EYE_VISIBILITY = os.getenv("ENFORCE_UNKNOWN_EYE_VISIBILITY", "true").lower() in ("1","true","yes")
+    MIN_UNKNOWN_IRIS_CONTRAST_RATIO = float(os.getenv("MIN_UNKNOWN_IRIS_CONTRAST_RATIO", "0.05"))  # was 0.15
+    MIN_UNKNOWN_EYE_DIST_RATIO = float(os.getenv("MIN_UNKNOWN_EYE_DIST_RATIO", "0.40"))  # was 0.50
     # Applies only to unknown creation. Employees are unaffected.
-    MAX_UNKNOWN_REG_YAW = float(os.getenv("MAX_UNKNOWN_REG_YAW", "25"))
+    MAX_UNKNOWN_REG_YAW = float(os.getenv("MAX_UNKNOWN_REG_YAW", "35"))  # was 25
 
     # Structured audit log for unknown-registration decisions (one JSON object per
     # line, size-rotated). Face images and embeddings are deliberately NOT written
