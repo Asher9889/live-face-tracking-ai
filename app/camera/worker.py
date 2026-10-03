@@ -1024,34 +1024,42 @@ def _camera_loop(cam: CameraConfig) -> None:
                         # Still within retry budget — keep collecting
                         continue
 
-                    # =====================================================
+                                        # =====================================================
                     # 🔵 STAGE 2: UNKNOWN
                     # =====================================================
                     elif state == TrackState.COLLECTING_UNKNOWN:
+                        camera_role = cam.camera_role
+                        buffer = track_unknown_buffer.get(person_id, [])
+
+                        # ---------------- GATE 1: FACE WIDTH ---------------- #
                         if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
-                            log(
-                                cam,
-                                person_id,
-                                "UNKNOWN",
-                                f"REJECT small face width={best_face_width} < {envConfig.MIN_UNKNOWN_REG_FACE_WIDTH}"
+                            log_filter_stage(
+                                cam_code=cam.code,
+                                track_id=person_id,
+                                camera_role=camera_role,
+                                filter_stage="face_width",
+                                passed=False,
+                                threshold_used=envConfig.MIN_UNKNOWN_REG_FACE_WIDTH,
+                                measured_value=best_face_width,
+                                buffer=buffer,
+                                builder=builder,
+                                force_create=False
                             )
-                            log_unknown_decision(
+                            log_decision(
                                 "unknown_rejected",
                                 cam.code,
                                 person_id,
                                 reason="face_width",
                                 threshold=envConfig.MIN_UNKNOWN_REG_FACE_WIDTH,
+                                measured_value=best_face_width,
                                 **face_metrics(
-                                    analysis, quality, final_quality, best_face_width
+                                    analysis, quality, final_quality, best_face_width,
+                                    buffer=buffer, builder=builder, camera_role=camera_role
                                 ),
                             )
                             continue
 
-                        # ---------------- EYE SHARPNESS ---------------- #
-                        # Log-only by default. ENFORCE_UNKNOWN_EYE_SHARPNESS=0 means
-                        # this measures and records but never drops, so the threshold
-                        # can be set from a real distribution before it starts
-                        # silently removing registrations.
+                        # ---------------- GATE 2: EYE SHARPNESS ---------------- #
                         eye_sharpness = best_face.get("eye_sharpness")
                         min_sharpness = envConfig.MIN_UNKNOWN_EYE_SHARPNESS
                         if (
@@ -1059,43 +1067,55 @@ def _camera_loop(cam: CameraConfig) -> None:
                             and eye_sharpness is not None
                             and eye_sharpness < min_sharpness
                         ):
-                            log(
-                                cam,
-                                person_id,
-                                "UNKNOWN",
-                                f"REJECT blurry eyes eye_sharpness={eye_sharpness:.0f} < {min_sharpness}",
+                            log_filter_stage(
+                                cam_code=cam.code,
+                                track_id=person_id,
+                                camera_role=camera_role,
+                                filter_stage="eye_sharpness",
+                                passed=False,
+                                threshold_used=min_sharpness,
+                                measured_value=eye_sharpness,
+                                buffer=buffer,
+                                builder=builder,
+                                force_create=False
                             )
-                            log_unknown_decision(
+                            log_decision(
                                 "unknown_rejected",
                                 cam.code,
                                 person_id,
                                 reason="eye_sharpness",
                                 threshold=min_sharpness,
+                                measured_value=eye_sharpness,
                                 **face_metrics(
-                                    analysis, quality, final_quality, best_face_width
+                                    analysis, quality, final_quality, best_face_width,
+                                    buffer=buffer, builder=builder, camera_role=camera_role
                                 ),
                             )
                             # Track consecutive quality gate failures
                             fails = track_unknown_quality_fails.get(person_id, 0) + 1
                             track_unknown_quality_fails[person_id] = fails
                             if fails >= UNKNOWN_FORCE_CREATE_AFTER:
-                                log(cam, person_id, "UNKNOWN", f"FORCE CREATE after {fails} consecutive quality gate failures")
-                                # Fall through to creation logic below
+                                force_create = True
                             else:
                                 continue
+                        else:
+                            force_create = False
 
-                        # ---------------- EYE VISIBILITY ---------------- #
-                        # An unknown is only useful if we can actually see both
-                        # eyes, otherwise the embedding encodes a profile or a
-                        # blur. eye_sharpness alone was not enough (it barely
-                        # separates the confirmed-noise registrations from good
-                        # matches), so the gate is on iris visibility.
-                        #
-                        # iris_contrast is a raw brightness difference, which
-                        # scales with scene exposure and therefore is not
-                        # comparable across cameras. Dividing by the iris core
-                        # brightness makes it a relative measure: how much darker
-                        # the pupil is than the ring around it.
+                        # Log passed filter
+                        log_filter_stage(
+                            cam_code=cam.code,
+                            track_id=person_id,
+                            camera_role=camera_role,
+                            filter_stage="eye_sharpness",
+                            passed=True,
+                            threshold_used=min_sharpness,
+                            measured_value=eye_sharpness,
+                            buffer=buffer,
+                            builder=builder,
+                            force_create=force_create
+                        )
+
+                        # ---------------- GATE 3: EYE VISIBILITY ---------------- #
                         core = analysis.get("iris_core_brightness")
                         contrast = analysis.get("iris_contrast_min")
                         if core and core > 0 and contrast is not None:
@@ -1109,6 +1129,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         min_eye_dist = envConfig.MIN_UNKNOWN_EYE_DIST_RATIO
                         max_yaw = envConfig.MAX_UNKNOWN_REG_YAW
 
+                        eye_visibility_passed = True
                         if envConfig.ENFORCE_UNKNOWN_EYE_VISIBILITY:
                             reasons = []
                             if yaw is not None and yaw > max_yaw:
@@ -1116,8 +1137,6 @@ def _camera_loop(cam: CameraConfig) -> None:
                             if iris_ratio is not None and iris_ratio < min_iris_ratio:
                                 reasons.append(("iris_contrast_ratio", iris_ratio, min_iris_ratio))
                             elif iris_ratio is None:
-                                # Cannot confirm the iris is visible, so it cannot
-                                # be confirmed as suitable for registration.
                                 reasons.append(("iris_contrast_ratio", None, min_iris_ratio))
                             if eye_dist_ratio is not None and eye_dist_ratio < min_eye_dist:
                                 reasons.append(("eye_dist_ratio", eye_dist_ratio, min_eye_dist))
@@ -1125,31 +1144,60 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 reasons.append(("eye_dist_ratio", None, min_eye_dist))
 
                             if reasons:
+                                eye_visibility_passed = False
                                 detail = ", ".join(
                                     f"{name}={value}" + (f" > {limit}" if name == "yaw" else f" < {limit}")
                                     for name, value, limit in reasons
                                 )
                                 log(cam, person_id, "UNKNOWN", f"REJECT eyes not visible: {detail}")
                                 for name, value, limit in reasons:
-                                    log_unknown_decision(
+                                    log_filter_stage(
+                                        cam_code=cam.code,
+                                        track_id=person_id,
+                                        camera_role=camera_role,
+                                        filter_stage=f"eye_visibility_{name}",
+                                        passed=False,
+                                        threshold_used=limit,
+                                        measured_value=value,
+                                        buffer=buffer,
+                                        builder=builder,
+                                        force_create=False
+                                    )
+                                    log_decision(
                                         "unknown_rejected",
                                         cam.code,
                                         person_id,
-                                        reason=name,
+                                        reason=f"eye_visibility_{name}",
                                         threshold=limit,
-                                        measured=value,
+                                        measured_value=value,
                                         **face_metrics(
-                                            analysis, quality, final_quality, best_face_width
+                                            analysis, quality, final_quality, best_face_width,
+                                            buffer=buffer, builder=builder, camera_role=camera_role
                                         ),
                                     )
-                                # Track consecutive quality gate failures
-                                fails = track_unknown_quality_fails.get(person_id, 0) + 1
-                                track_unknown_quality_fails[person_id] = fails
-                                if fails >= UNKNOWN_FORCE_CREATE_AFTER:
-                                    log(cam, person_id, "UNKNOWN", f"FORCE CREATE after {fails} consecutive quality gate failures")
-                                    # Fall through to creation logic below
+                                    # Track consecutive quality gate failures
+                                    fails = track_unknown_quality_fails.get(person_id, 0) + 1
+                                    track_unknown_quality_fails[person_id] = fails
+                                    if fails >= UNKNOWN_FORCE_CREATE_AFTER:
+                                        force_create = True
+                                    else:
+                                        continue
                                 else:
-                                    continue
+                                    force_create = False
+
+                        # Log passed eye visibility
+                        log_filter_stage(
+                            cam_code=cam.code,
+                            track_id=person_id,
+                            camera_role=camera_role,
+                            filter_stage="eye_visibility",
+                            passed=eye_visibility_passed,
+                            threshold_used=None,
+                            measured_value=None,
+                            buffer=buffer,
+                            builder=builder,
+                            force_create=force_create
+                        )
 
                         buffer = track_unknown_buffer.get(person_id, [])
 

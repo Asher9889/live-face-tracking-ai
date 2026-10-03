@@ -72,15 +72,22 @@ def get_handler():
         return _handler
 
 
-def log_decision(event: str, cam_code, track_id, **fields):
-    """
-    Append one decision record.
+def _build_base_record(event: str, cam_code, track_id, camera_role: str = None):
+    """Build the base record shared by all log functions."""
+    record = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "event": event,
+        "camera": cam_code,
+        "track_id": int(track_id) if track_id is not None else None,
+    }
+    if camera_role:
+        record["camera_role"] = camera_role
+        record["can_create_unknown"] = (camera_role == "REGISTER")
+    return record
 
-    `event` is the record type, e.g. "unknown_registered" or
-    "unknown_rejected". Everything else becomes a JSON field. Values that are not
-    JSON-serialisable are stringified rather than dropped, so a record is never
-    lost to a logging bug.
-    """
+
+def _write_record(record: dict):
+    """Best-effort write of a JSON record to the rotating log."""
     if not envConfig.UNKNOWN_CREATION_LOG_ENABLED:
         return
 
@@ -88,26 +95,12 @@ def log_decision(event: str, cam_code, track_id, **fields):
     if handler is None:
         return
 
-    record = {
-        "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "event": event,
-        "camera": cam_code,
-        "track_id": int(track_id) if track_id is not None else None,
-    }
-
-    for key, value in fields.items():
-        if isinstance(value, float):
-            # Round for readability; full precision is noise in an audit log.
-            record[key] = round(value, 4)
-        elif value is None or isinstance(value, (int, str, bool)):
-            record[key] = value
-        else:
-            record[key] = str(value)
-
-    # Threshold actually in force, so historical records stay interpretable if the
-    # value is tuned later.
+    # Thresholds in force at log time
     record["min_eye_sharpness"] = envConfig.MIN_UNKNOWN_EYE_SHARPNESS
     record["enforce_eye_sharpness"] = envConfig.ENFORCE_UNKNOWN_EYE_SHARPNESS
+    record["min_iris_contrast_ratio"] = envConfig.MIN_UNKNOWN_IRIS_CONTRAST_RATIO
+    record["min_eye_dist_ratio"] = envConfig.MIN_UNKNOWN_EYE_DIST_RATIO
+    record["max_unknown_reg_yaw"] = envConfig.MAX_UNKNOWN_REG_YAW
 
     try:
         handler.emit(logging.LogRecord(
@@ -123,25 +116,107 @@ def log_decision(event: str, cam_code, track_id, **fields):
         logger.warning("[UNKNOWN_LOG] write failed: %s", exc)
 
 
-def face_metrics(analysis, quality, final_quality, best_face_width=None):
-    """
-    Extract the comparable measurements from a face pipeline iteration.
+def _coerce_fields(record: dict, fields: dict):
+    """Coerce field values to JSON-native types."""
+    for key, value in fields.items():
+        if isinstance(value, float):
+            record[key] = round(value, 4)
+        elif value is None or isinstance(value, (int, str, bool)):
+            record[key] = value
+        else:
+            record[key] = str(value)
 
-    Returns a dict shaped for `log_decision`, so the call site stays a one-liner
-    and every record carries the same field names.
+
+def log_filter_stage(
+    cam_code: str,
+    track_id,
+    camera_role: str,
+    filter_stage: str,
+    passed: bool,
+    threshold_used,
+    measured_value,
+    buffer=None,
+    builder=None,
+    force_create: bool = False,
+    **extra_fields
+):
+    """
+    Log a single filter gate decision (face_width, eye_sharpness, eye_visibility, force_create).
+    
+    Call this at EACH gate (face_width, eye_sharpness, eye_visibility, force_create).
+    """
+    record = _build_base_record("filter_stage", cam_code, track_id, camera_role=None)
+    record["filter_stage"] = filter_stage
+    record["passed"] = passed
+    record["threshold_used"] = threshold_used
+    record["measured_value"] = measured_value
+    record["force_create"] = force_create
+
+    if buffer is not None:
+        record["buffer_frames"] = len(buffer)
+        poses = {item.get("pose_bucket") for item in buffer if item.get("pose_bucket")}
+        record["buffer_poses"] = list(poses)
+        if buffer:
+            qvals = [item.get("quality", 0) for item in buffer]
+            record["buffer_quality_min"] = min(qvals)
+            record["buffer_quality_max"] = max(qvals)
+
+    if builder is not None:
+        record["builder_ready"] = builder.is_ready(buffer) if buffer else False
+        record["builder_min_frames"] = builder.min_frames
+        record["builder_min_poses"] = builder.min_poses
+
+    _coerce_fields(record, {
+        "threshold_used": threshold_used,
+        "measured_value": measured_value,
+    })
+
+    _write_record(record)
+
+
+def log_decision(event: str, cam_code, track_id, camera_role: str = None, **fields):
+    """
+    Append one decision record (kept for backward compatibility).
+    
+    `event` is the record type, e.g. "unknown_registered" or "unknown_rejected".
+    """
+    record = _build_base_record(event, cam_code, track_id, camera_role)
+    _coerce_fields(record, fields)
+    _write_record(record)
+
+
+def _num(value):
+    """Coerce numpy float32 to native float for JSON serialization."""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def face_metrics(
+    analysis,
+    quality,
+    final_quality,
+    best_face_width=None,
+    buffer=None,
+    builder=None,
+    camera_role: str = None,
+    force_create: bool = False,
+    filter_stage: str = None,
+    threshold_used=None,
+    measured_value=None,
+):
+    """
+    Extract comparable measurements from a face pipeline iteration.
+    
+    Returns a dict for `log_decision` / `log_filter_stage` with all face metrics
+    plus pipeline context (buffer state, builder state, thresholds in force).
     """
     analysis = analysis or {}
 
     def num(key):
-        """
-        Coerce to a native float.
-
-        The eye metrics come out of numpy as float32, which json.dumps cannot
-        serialise. The logger's fallback would stringify them into quoted text,
-        which silently breaks every numeric comparison made against the log
-        (jq '.iris_contrast < 10' on a string is not the same test). Coerce here
-        so a recorded metric is always a real JSON number.
-        """
         value = analysis.get(key)
         if value is None:
             return None
@@ -157,27 +232,55 @@ def face_metrics(analysis, quality, final_quality, best_face_width=None):
     else:
         iris_contrast_ratio = None
 
-    return {
-        "eye_sharpness": num("eye_sharpness"),
-        # Iris-presence signals. iris_contrast is the gate candidate: it is the
-        # weaker of the two eyes, and reads near zero when an eye is closed, turned
-        # away, or occluded.
-        "iris_contrast": contrast,
-        # Raw contrast scales with scene exposure, so it is not comparable
-        # between cameras. The ratio is the scale-free form and is what the
-        # registration gate tests.
+    metrics = {
+        "eye_sharpness": _num(analysis.get("eye_sharpness")),
+        "iris_contrast": _num("iris_contrast_min"),
         "iris_contrast_ratio": iris_contrast_ratio,
-        "iris_contrast_mean": num("iris_contrast_mean"),
-        "iris_core_brightness": core,
-        "iris_radius": num("iris_radius"),
-        "eye_aperture": num("eye_aperture"),
-        "blur": num("blur"),
-        "yaw": num("yaw"),
-        "pitch": num("pitch"),
-        "roll": num("roll"),
-        "eye_dist_ratio": num("eye_dist_ratio"),
-        "face_w_in_crop": num("face_width"),
+        "iris_contrast_mean": _num("iris_contrast_mean"),
+        "iris_core_brightness": _num("iris_core_brightness"),
+        "iris_radius": _num("iris_radius"),
+        "eye_aperture": _num("eye_aperture"),
+        "blur": _num("blur"),
+        "yaw": _num("yaw"),
+        "pitch": _num("pitch"),
+        "roll": _num("roll"),
+        "eye_dist_ratio": _num("eye_dist_ratio"),
+        "face_w_in_crop": _num(analysis.get("face_width")),
         "quality": quality,
         "final_quality": final_quality,
         "best_face_width": best_face_width,
+        "min_eye_sharpness": envConfig.MIN_UNKNOWN_EYE_SHARPNESS,
+        "min_iris_contrast_ratio": envConfig.MIN_UNKNOWN_IRIS_CONTRAST_RATIO,
+        "min_eye_dist_ratio": envConfig.MIN_UNKNOWN_EYE_DIST_RATIO,
+        "max_unknown_reg_yaw": envConfig.MAX_UNKNOWN_REG_YAW,
     }
+
+    # Pipeline context
+    if buffer is not None:
+        metrics["buffer_frames"] = len(buffer)
+        poses = {item.get("pose_bucket") for item in buffer if item.get("pose_bucket")}
+        metrics["buffer_poses"] = list(poses)
+        if buffer:
+            qvals = [item.get("quality", 0) for item in buffer]
+            metrics["buffer_quality_min"] = min(qvals)
+            metrics["buffer_quality_max"] = max(qvals)
+
+    if builder is not None:
+        metrics["builder_ready"] = builder.is_ready(buffer) if buffer else False
+        metrics["builder_min_frames"] = builder.min_frames
+        metrics["builder_min_poses"] = builder.min_poses
+
+    if camera_role:
+        metrics["camera_role"] = camera_role
+        metrics["can_create_unknown"] = (camera_role == "REGISTER")
+
+    if force_create:
+        metrics["force_create"] = True
+
+    if filter_stage:
+        metrics["filter_stage"] = filter_stage
+
+    if threshold_used is not None:
+        metrics["threshold_used"] = threshold_used
+
+    return metrics
