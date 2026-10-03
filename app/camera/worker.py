@@ -1034,9 +1034,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         # ---------------- GATE 1: FACE WIDTH ---------------- #
                         if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
                             log_filter_stage(
-                                cam_code=cam.code,
-                                track_id=person_id,
-                                camera_role=camera_role,
+                                cam.code, person_id, camera_role,
                                 filter_stage="face_width",
                                 passed=False,
                                 threshold_used=envConfig.MIN_UNKNOWN_REG_FACE_WIDTH,
@@ -1068,9 +1066,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                             and eye_sharpness < min_sharpness
                         ):
                             log_filter_stage(
-                                cam_code=cam.code,
-                                track_id=person_id,
-                                camera_role=camera_role,
+                                cam.code, person_id, camera_role,
                                 filter_stage="eye_sharpness",
                                 passed=False,
                                 threshold_used=min_sharpness,
@@ -1103,9 +1099,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                         # Log passed filter
                         log_filter_stage(
-                            cam_code=cam.code,
-                            track_id=person_id,
-                            camera_role=camera_role,
+                            cam.code, person_id, camera_role,
                             filter_stage="eye_sharpness",
                             passed=True,
                             threshold_used=min_sharpness,
@@ -1152,9 +1146,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 log(cam, person_id, "UNKNOWN", f"REJECT eyes not visible: {detail}")
                                 for name, value, limit in reasons:
                                     log_filter_stage(
-                                        cam_code=cam.code,
-                                        track_id=person_id,
-                                        camera_role=camera_role,
+                                        cam.code, person_id, camera_role,
                                         filter_stage=f"eye_visibility_{name}",
                                         passed=False,
                                         threshold_used=limit,
@@ -1187,9 +1179,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                         # Log passed eye visibility
                         log_filter_stage(
-                            cam_code=cam.code,
-                            track_id=person_id,
-                            camera_role=camera_role,
+                            cam.code, person_id, camera_role,
                             filter_stage="eye_visibility",
                             passed=eye_visibility_passed,
                             threshold_used=None,
