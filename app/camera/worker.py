@@ -508,21 +508,25 @@ def _camera_loop(cam: CameraConfig) -> None:
                             confidence = 0.9
 
                         raw_state = track_state.get(pid)
-                        preview_tracks.append(
-                            {
-                                "track_id": pid,
-                                "bbox": [float(x) for x in bbox],
-                                "state": raw_state.value if raw_state is not None else None,
-                                "label": label,
-                                "label_name": label_name,
-                                "label_confidence": confidence,
-                                # Re-verification (STAGE 0) is active, so a label is
-                                # no longer guaranteed for the life of the track: a
-                                # track that swaps owners is cleared back to
-                                # COLLECTING_KNOWN. None means "no expiry advertised".
-                                "label_expires_at": None,
-                            }
-                        )
+                        track_entry = {
+                            "track_id": pid,
+                            "bbox": [float(x) for x in bbox],
+                            "state": raw_state.value if raw_state is not None else None,
+                            "label": label,
+                            "label_name": label_name,
+                            "label_confidence": confidence,
+                            # Re-verification (STAGE 0) is active, so a label is
+                            # no longer guaranteed for the life of the track: a
+                            # track that swaps owners is cleared back to
+                            # COLLECTING_KNOWN. None means "no expiry advertised".
+                            "label_expires_at": None,
+                        }
+                        # Add buffer_size for COLLECTING_UNKNOWN to show progress
+                        if raw_state == TrackState.COLLECTING_UNKNOWN:
+                            buf = track_unknown_buffer.get(pid)
+                            if buf:
+                                track_entry["buffer_size"] = len(buf)
+                        preview_tracks.append(track_entry)
 
                     preview.submit(
                         frame_bgr=frame,
