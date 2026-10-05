@@ -121,7 +121,9 @@ class SafeReIDEncoder:
         embed = [len(self.model.model.model) - 2 if model.endswith(".pt") else -1]
         self.model(embed=embed, verbose=False, save=False, device=device)
 
-        logger.info("[Tracker] ReID encoder on %s (%s)", device, os.path.basename(model))
+        # print, not logger.info: only WARNING+ is configured, so INFO would hide
+        # the one line that proves which device the encoder landed on.
+        print(f"[Tracker] ReID encoder device: {device} ({os.path.basename(model)})")
 
     def _predict(self, crops):
         return self.model.predictor(crops)
@@ -166,4 +168,3 @@ def install_reid_encoder() -> None:
     from ultralytics.trackers import bot_sort
 
     bot_sort.ReID = SafeReIDEncoder
-    logger.info("[Tracker] ReID encoder installed (GPU-first, CPU fallback)")
