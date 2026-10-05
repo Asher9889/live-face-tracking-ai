@@ -21,6 +21,7 @@ from app.ai.face_mesh_engine import FaceLandmarkerEngine
 from app.ai.runtime_device import resolve_torch_device, log_summary as log_device_summary
 from app.camera.extract_person_roi import extract_person_roi
 from app.camera.preview_publisher import PreviewPublisher
+from app.camera.reid_encoder import install_reid_encoder
 from app.camera.tracker_assets import resolve_tracker_config
 from app.config.config import envConfig
 from app.events.publisher import EventPublisher
@@ -327,6 +328,7 @@ def start_camera_threads(cameras: List[CameraConfig]) -> None:
 
     if TRACKER_YAML:
         TRACKER_YAML = resolve_tracker_config(TRACKER_YAML)
+        install_reid_encoder()
 
     print(f"[Camera] Starting {len(cameras)} camera threads...")
 
