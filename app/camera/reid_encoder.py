@@ -21,10 +21,16 @@ problems for this project:
 
 This encoder guarantees exactly one L2-normalised embedding per input crop, on any
 backend, falling back to per-crop inference when the batched result is ambiguous.
+
+3. Memory. BOTSORT builds one encoder per camera, and an ONNX CUDA session keeps
+   its own memory pools, so 18 cameras meant 18 sessions and ~10.7 GB resident
+   memory where the app used to sit at 2 GB. Instances are shared by model path and
+   device, so the whole process loads the ReID model once.
 """
 
 import logging
 import os
+import threading
 
 import numpy as np
 import torch
@@ -105,28 +111,60 @@ def _normalise(feats: list, n: int) -> list:
 
 
 class SafeReIDEncoder:
-    """Drop-in replacement for ultralytics.trackers.bot_sort.ReID."""
+    """
+    Drop-in replacement for ultralytics.trackers.bot_sort.ReID.
+
+    Every camera thread builds its own tracker, so ultralytics would build one
+    encoder per camera. An ONNX CUDA session keeps its own memory pools and
+    cuDNN/cuBLAS workspaces, so N cameras means N sessions and roughly N times the
+    resident memory: 18 cameras took this app from 2 GB to about 10.7 GB RSS.
+    A single shared instance fixes that. ONNX Runtime runs are safe to issue from
+    several threads, but the ultralytics predictor mutates its own results and
+    profiler, so calls are serialised behind _predict_lock.
+    """
+
+    _registry_lock = threading.Lock()
+    # (model path, device) -> the one loaded encoder.
+    _shared: dict[tuple[str, str], "SafeReIDEncoder"] = {}
 
     def __init__(self, model: str):
         from ultralytics import YOLO
 
         device = resolve_torch_device()
-        self.device = device
-        self.model_path = model
+        key = (os.path.abspath(str(model)), str(device))
 
-        # Device is a call-time argument: YOLO.__init__ has no device kwarg and the
-        # AutoBackend is built from the first call. This init call creates the
-        # backend, so the device has to be set here to reach the session.
-        self.model = YOLO(model)
-        embed = [len(self.model.model.model) - 2 if model.endswith(".pt") else -1]
-        self.model(embed=embed, verbose=False, save=False, device=device)
+        with self._registry_lock:
+            existing = self._shared.get(key)
+            if existing is not None:
+                # Hand this tracker a handle onto the already-loaded model
+                # instead of a second session.
+                self.__dict__ = existing.__dict__
+                return
+
+            self._predict_lock = threading.Lock()
+            self.device = device
+            self.model_path = model
+
+            # Device is a call-time argument: YOLO.__init__ has no device kwarg
+            # and the AutoBackend is built from the first call. This init call
+            # creates the backend, so the device has to be set here to reach the
+            # session.
+            self.model = YOLO(model)
+            embed = [len(self.model.model.model) - 2 if model.endswith(".pt") else -1]
+            self.model(embed=embed, verbose=False, save=False, device=device)
+
+            self._shared[key] = self
 
         # print, not logger.info: only WARNING+ is configured, so INFO would hide
         # the one line that proves which device the encoder landed on.
-        print(f"[Tracker] ReID encoder device: {device} ({os.path.basename(model)})")
+        print(
+            f"[Tracker] ReID encoder device: {device} ({os.path.basename(model)}), "
+            f"shared across camera threads"
+        )
 
     def _predict(self, crops):
-        return self.model.predictor(crops)
+        with self._predict_lock:
+            return self.model.predictor(crops)
 
     def __call__(self, img: np.ndarray, dets: np.ndarray) -> list:
         from ultralytics.utils.ops import xywh2xyxy
