@@ -31,11 +31,13 @@ backend, falling back to per-crop inference when the batched result is ambiguous
 import logging
 import os
 import threading
+import time
 
 import numpy as np
 import torch
 
 from app.ai.runtime_device import resolve_torch_device
+from app.camera.perf import REID_PERF
 
 logger = logging.getLogger(__name__)
 
@@ -163,8 +165,20 @@ class SafeReIDEncoder:
         )
 
     def _predict(self, crops):
+        # The shared encoder serves every camera thread, so its cost is recorded
+        # on a global meter: without this, ReID time would be invisible or
+        # misattributed to whichever camera happened to trigger it.
+        # Lock wait is timed separately from inference, because with one shared
+        # encoder the wait is the part that can silently serialise all cameras.
+        t_lock = time.perf_counter()
         with self._predict_lock:
-            return self.model.predictor(crops)
+            REID_PERF.record("reid_lock_wait", (time.perf_counter() - t_lock) * 1000.0)
+            t0 = time.perf_counter()
+            try:
+                return self.model.predictor(crops)
+            finally:
+                REID_PERF.record("reid", (time.perf_counter() - t0) * 1000.0)
+                REID_PERF.add("crops", len(crops))
 
     def __call__(self, img: np.ndarray, dets: np.ndarray) -> list:
         from ultralytics.utils.ops import xywh2xyxy

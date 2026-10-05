@@ -98,4 +98,20 @@ class EnvConfig:
     UNKNOWN_CREATION_LOG_MAX_BYTES = int(os.getenv("UNKNOWN_CREATION_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
     UNKNOWN_CREATION_LOG_BACKUPS = int(os.getenv("UNKNOWN_CREATION_LOG_BACKUPS", "5"))
 
+    # Per-track pipeline timing (one JSON object per line, size-rotated).
+    # Complements PERF_LOG: that one is per camera/frame and answers "which
+    # stage is slow", this one is per track and answers "which track, in which
+    # state, and how long to resolve". Rows are aggregated per track lifecycle
+    # rather than written per frame — per-frame rows would be >1000 lines/sec
+    # across the camera fleet and the log I/O would distort what it measures.
+    TRACK_PERF_LOG_ENABLED = bool(int(os.getenv("TRACK_PERF_LOG_ENABLED", "1")))
+    TRACK_PERF_LOG_PATH = os.getenv("TRACK_PERF_LOG_PATH", "logs/track_perf.log")
+    TRACK_PERF_LOG_MAX_BYTES = int(os.getenv("TRACK_PERF_LOG_MAX_BYTES", str(10 * 1024 * 1024)))
+    TRACK_PERF_LOG_BACKUPS = int(os.getenv("TRACK_PERF_LOG_BACKUPS", "5"))
+    # Seconds between summary rows for tracks that are still alive.
+    TRACK_PERF_LOG_INTERVAL = float(os.getenv("TRACK_PERF_LOG_INTERVAL", "30"))
+    # 1 = also emit one row per frame per track. Only for short, targeted
+    # debugging sessions; rotation will not save you from 1000+ lines/sec.
+    TRACK_PERF_LOG_VERBOSE = bool(int(os.getenv("TRACK_PERF_LOG_VERBOSE", "0")))
+
 envConfig = EnvConfig()  

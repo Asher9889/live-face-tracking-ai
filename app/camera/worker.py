@@ -21,6 +21,8 @@ from app.ai.face_mesh_engine import FaceLandmarkerEngine
 from app.ai.runtime_device import resolve_torch_device, log_summary as log_device_summary
 from app.camera.extract_person_roi import extract_person_roi
 from app.camera.preview_publisher import PreviewPublisher
+from app.camera.perf import PerfMeter
+from app.camera.track_perf import track_perf
 from app.camera.reid_encoder import install_reid_encoder
 from app.camera.tracker_assets import resolve_tracker_config
 from app.config.config import envConfig
@@ -369,6 +371,54 @@ def _camera_loop(cam: CameraConfig) -> None:
     track_event_emitter = TrackEventEmitter(publisher=publisher, gate_type=cam.gate_type)
     builder = UniqueFaceRepresentationBuilder()
 
+    # Stage timing. One summary line every PERF_LOG_INTERVAL seconds, so the
+    # cost of each pipeline stage is measured rather than guessed at. Kept out
+    # of the model/face code itself: the hot path only does perf_counter reads.
+    perf = PerfMeter(cam.code)
+    # The stage wrappers below are shared by every person in the loop, so they
+    # read the track they are currently servicing from here. Set at the top of
+    # each person iteration; None means "not inside a track's work".
+    cur_track = {"pid": None}
+
+    # Wrappers rather than edited call sites: the timings must not change how
+    # the pipeline behaves, and a with-block around each call would mean
+    # re-indenting half the loop.
+    def _face_detect(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return insight_engine.detect_and_generate_embedding(*args, **kwargs)
+        finally:
+            ms = (time.perf_counter() - t0) * 1000.0
+            perf.record("face_det", ms)
+            track_perf.observe(cam.code, cur_track["pid"], "face_det", ms)
+
+    def _landmark(*args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return face_landmarker_engine.analyze(*args, **kwargs)
+        finally:
+            ms = (time.perf_counter() - t0) * 1000.0
+            perf.record("landmark", ms)
+            track_perf.observe(cam.code, cur_track["pid"], "landmark", ms)
+
+    def _faiss(fn, *args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            ms = (time.perf_counter() - t0) * 1000.0
+            perf.record("faiss", ms)
+            track_perf.observe(cam.code, cur_track["pid"], "faiss", ms)
+
+    def _http(fn, *args, **kwargs):
+        t0 = time.perf_counter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            ms = (time.perf_counter() - t0) * 1000.0
+            perf.record("http", ms)
+            track_perf.observe(cam.code, cur_track["pid"], "http", ms)
+
     track_state = {}
     track_identity = {}
     # Display name for the preview overlay. track_identity stays the employee id
@@ -450,6 +500,8 @@ def _camera_loop(cam: CameraConfig) -> None:
         # Real-time measure of this camera's processing rate, for TTL alignment.
         _fps = 0.0
         _last_ts = None
+        # Start of the current frame's work; None until the first frame lands.
+        frame_start = None
 
         # last_processed = 0.0
 
@@ -473,6 +525,21 @@ def _camera_loop(cam: CameraConfig) -> None:
                 frame, captured_at = frame_queue.get(timeout=5)
                 if frame is None or frame.size == 0:
                     continue
+
+                perf.tick()
+                # How stale the frame already is when we pick it up: decode +
+                # queue wait. This is latency no downstream stage caused, so it
+                # is checked first when frame age looks wrong.
+                perf.record("queue_wait", (time.time() - captured_at) * 1000.0)
+                # Cost of the previous frame, sampled here rather than at the
+                # end so the dozens of `continue` paths are measured too.
+                if frame_start is not None:
+                    perf.record("frame_total", (time.perf_counter() - frame_start) * 1000.0)
+                    perf.flush()
+                # Periodic per-track rows for whatever is still alive; cheap
+                # because it only writes tracks whose interval has elapsed.
+                track_perf.flush_due()
+                frame_start = time.perf_counter()
 
                 # Measure the real per-camera processing rate (EMA). The BoT-SORT
                 # track buffer is expressed in FRAMES (ultralytics hardcodes
@@ -517,6 +584,10 @@ def _camera_loop(cam: CameraConfig) -> None:
             try:
                 frame_h, frame_w = frame.shape[:2]
 
+                # Detect + BoT-SORT + ReID. ReID reports its own split on the
+                # global [PERF reid] line, so "track" minus "reid" is the
+                # detector+association share.
+                t_track = time.perf_counter()
                 results = model.track(
                     frame,
                     persist=True,
@@ -527,6 +598,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                     imgsz=TRACK_IMGSZ,
                     **({"tracker": TRACKER_YAML} if TRACKER_YAML else {}),
                 )
+                perf.record("track", (time.perf_counter() - t_track) * 1000.0)
 
                 # A frame with nobody in it is still a frame. Detection decides only
                 # what metadata rides along with the picture, never whether the
@@ -542,6 +614,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                     boxes = np.empty((0, 4), dtype=np.float32)
                     ids = np.empty((0,), dtype=np.int64)
 
+                # People visible this frame. Compared against face_calls in the
+                # summary to show whether recognition is running for everyone.
+                perf.add("persons", len(ids))
+
                 # ---------------------------------------------------------------
                 # PREVIEW PUBLISH — every frame, cheap, before the face pipeline.
                 #
@@ -550,6 +626,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 # per-frame work, and publishing before the expensive stage keeps
                 # preview latency independent of recognition cost.
                 # ---------------------------------------------------------------
+                t_pub = time.perf_counter()
                 if preview is not None:
                     preview_tracks = []
                     for pid, bbox in zip(ids, boxes):
@@ -597,6 +674,11 @@ def _camera_loop(cam: CameraConfig) -> None:
                         source_h=frame_h,
                         tracks=preview_tracks,
                     )
+                    perf.record("publish", (time.perf_counter() - t_pub) * 1000.0)
+                    # The number that matters most: capture -> hand-off to
+                    # LiveKit. If this grows over time the system is falling
+                    # behind; if it is flat but high, a stage above is slow.
+                    perf.record("age", (time.time() - captured_at) * 1000.0)
 
                 if not has_persons:
                     # Nothing to recognise, and nothing to retire: a short empty gap
@@ -616,6 +698,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                 lost = track_event_emitter.cleanup_lost_tracks(cam.code, ids.tolist(), grace=_grace)
 
                 for tid in lost:
+                    # Final per-track timing row before the bookkeeping goes away.
+                    track_perf.retire(cam.code, tid)
                     track_state.pop(tid, None)
                     track_identity.pop(tid, None)
                     track_identity_name.pop(tid, None)
@@ -683,6 +767,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                 for person_id, bbox in zip(ids, boxes):
 
                     person_id = int(person_id)
+                    cur_track["pid"] = person_id
 
                     # Keep track lifecycle state updated so emit-once events are not dropped.
                     track_event_emitter.update_track(
@@ -705,6 +790,14 @@ def _camera_loop(cam: CameraConfig) -> None:
                     #     log(cam, person_id, "DEBUG", f"EXISTING STATE → {track_state[person_id]}")
 
                     state = track_state[person_id]
+                    # One call per serviced track per frame: logs transitions,
+                    # and emits a single row when the identity resolves.
+                    track_perf.state(
+                        cam.code,
+                        person_id,
+                        state.value,
+                        track_identity.get(person_id) or track_unknown_identity.get(person_id),
+                    )
 
                     # -------------------------
                     # ROI + FACE DETECTION
@@ -724,7 +817,8 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                     _, roi, offset = roi_data
 
-                    faces = insight_engine.detect_and_generate_embedding(roi, offset, cam.code)
+                    perf.add("face_calls", 1)
+                    faces = _face_detect(roi, offset, cam.code)
 
                     if not faces:
                         continue
@@ -800,7 +894,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                         f["face_img"] = face_img
 
-                        analysis = face_landmarker_engine.analyze(face_img)
+                        analysis = _landmark(face_img)
                         # is_valid = face_landmarker_engine.is_valid_face(analysis, cam.code) 
                         mp_score = face_landmarker_engine.score_face(analysis)
 
@@ -910,7 +1004,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                             face_img_up = cv2.resize(face_img, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
                             
                             # Re-extract embedding from upscaled face
-                            faces_up = insight_engine.detect_and_generate_embedding(face_img_up, (0, 0), cam.code)
+                            perf.add("upscales", 1)
+                            faces_up = _face_detect(face_img_up, (0, 0), cam.code)
                             if faces_up:
                                 emb_up = faces_up[0]["embedding"]
                                 embedding = emb_up
@@ -918,7 +1013,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 log(cam, person_id, "UPSCALE", f"{best_face_width}px → {new_w}px for collection")
 
                         # Try match on (possibly upscaled) embedding
-                        match = embedding_store.find_match(embedding)
+                        match = _faiss(embedding_store.find_match, embedding)
 
                         if match:
                             emp_id = match["employee_id"]
@@ -981,7 +1076,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                             final = np.average(emb, axis=0, weights=w)
                             final /= np.linalg.norm(final)
 
-                            match = embedding_store.find_match(final)
+                            match = _faiss(embedding_store.find_match, final)
                             if match:
                                 track_identity[person_id] = match["employee_id"]
                                 track_identity_name[person_id] = match["name"]
@@ -1035,7 +1130,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                             final = np.average(emb, axis=0, weights=w)
                             final /= np.linalg.norm(final)
 
-                            match = embedding_store.find_match(final)
+                            match = _faiss(embedding_store.find_match, final)
                             if match:
                                 track_identity[person_id] = match["employee_id"]
                                 track_identity_name[person_id] = match["name"]
@@ -1323,7 +1418,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         if not ok:
                             continue
 
-                        match = unknown_embedding_store.find_match(centroid)
+                        match = _faiss(unknown_embedding_store.find_match, centroid)
 
                         if match:
                             unknown_id = match["unknown_id"]
@@ -1363,7 +1458,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 unknown_id=None,
                                 builder=builder
                             )
-                            unknown_id = unknown_embedding_store.add_unknown(payload)
+                            unknown_id = _http(unknown_embedding_store.add_unknown, payload)
 
                             if not unknown_id:
                                 log(cam, person_id, "UNKNOWN", "CREATE FAILED → STAY COLLECTING_UNKNOWN")
@@ -1539,7 +1634,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                         # =====================================================
                         # 🔥 STEP 5: API CALL
                         # =====================================================
-                        updated_id = unknown_embedding_store.update_unknown(
+                        updated_id = _http(
+                            unknown_embedding_store.update_unknown,
                             unknown_id,
                             centroid,
                             int(time.time() * 1000),
