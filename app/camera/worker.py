@@ -465,6 +465,10 @@ def _camera_loop(cam: CameraConfig) -> None:
             # Stamp at decode, before any inference. Everything downstream derives
             # its latency from this value, so it must not be taken later.
             frame_queue.put((frame, time.time()))
+            # Decode rate, counted where ffmpeg hands frames over. Split from
+            # the loop's tick(): dec_fps ~25 with fps ~1 means the pipeline is
+            # slow; both low means RTSP/ffmpeg itself is starving the loop.
+            perf.tick_decode()
 
 
     while True:
@@ -553,6 +557,10 @@ def _camera_loop(cam: CameraConfig) -> None:
                     _fps = _fps * 0.9 + _inst * 0.1 if _fps > 0 else _inst
                 _last_ts = _now
             except Empty:
+                # A camera that stops producing frames would otherwise go silent
+                # exactly when it matters most: emit whatever the window has
+                # (decode counts included) before tearing the capture down.
+                perf.flush(force=True)
                 print(f"[Camera] ⚠️ No frames → {cam.code}; reconnecting")
                 # cap.release()
                 # stop_event.set()
@@ -675,6 +683,9 @@ def _camera_loop(cam: CameraConfig) -> None:
                         tracks=preview_tracks,
                     )
                     perf.record("publish", (time.perf_counter() - t_pub) * 1000.0)
+                    # Frames that actually reached LiveKit vs frames processed;
+                    # a gap here means publishing dropped, not the pipeline.
+                    perf.add("published")
                     # The number that matters most: capture -> hand-off to
                     # LiveKit. If this grows over time the system is falling
                     # behind; if it is flat but high, a stage above is slow.
