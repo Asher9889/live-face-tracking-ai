@@ -1,7 +1,9 @@
+import sys
 import time
 import threading
 from app.api.run_server import start_api
 from app.camera import fetch_cameras, start_camera_threads
+from app.camera.tracker_assets import TrackerAssetError
 from app.recognition import embedding_store, unknown_embedding_store
 from app.api.server import wait_for_api
 
@@ -36,8 +38,16 @@ def main():
         print("\n🛑 Shutdown requested") 
         time.sleep(1) 
 
+    except TrackerAssetError as e:
+        # Tracking is unusable without the ReID checkpoint, so there is no point
+        # running the API or the camera workers. Fail loudly instead.
+        print("\n🔥 Fatal error: required tracker model is unavailable\n")
+        print(f"{e}\n")
+        sys.exit(1)
+
     except Exception as e:
         print(f"\n🔥 Fatal error: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -101,7 +101,7 @@ class UniqueFaceRepresentationBuilder:
 
         buffer = sorted(buffer, key=lambda x: x["quality"], reverse=True)
 
-        frontal = [x for x in buffer if x["pose_bucket"] == "frontal"]
+        frontal = [x for x in buffer if x.get("pose_bucket") == "frontal"]
 
         if frontal:
             best_frontal = frontal[0]
@@ -120,7 +120,7 @@ class UniqueFaceRepresentationBuilder:
         if len(buffer) < self.min_frames:
             return False
 
-        poses = {item["pose_bucket"] for item in buffer}
+        poses = {item.get("pose_bucket") for item in buffer if item.get("pose_bucket")}
         if len(poses) < self.min_poses:
             return False
 
@@ -143,7 +143,7 @@ class UniqueFaceRepresentationBuilder:
 
         return {
             "count": len(buffer),
-            "poses": list({x["pose_bucket"] for x in buffer}),
+            "poses": list({x.get("pose_bucket") for x in buffer if x.get("pose_bucket")}),
             "max_quality": max(x["quality"] for x in buffer),
             "avg_quality": float(np.mean([x["quality"] for x in buffer]))
         }

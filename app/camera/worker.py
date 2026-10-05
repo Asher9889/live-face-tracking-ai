@@ -21,6 +21,7 @@ from app.ai.face_mesh_engine import FaceLandmarkerEngine
 from app.ai.runtime_device import resolve_torch_device, log_summary as log_device_summary
 from app.camera.extract_person_roi import extract_person_roi
 from app.camera.preview_publisher import PreviewPublisher
+from app.camera.tracker_assets import resolve_tracker_config
 from app.config.config import envConfig
 from app.events.publisher import EventPublisher
 from app.recognition import embedding_store, unknown_embedding_store
@@ -254,6 +255,40 @@ def pick_track_face(faces, person_bbox, cam, person_id):
     return [best]
 
 
+def seed_unknown_buffer(buffer):
+    """
+    Copy a retry/known buffer into the unknown buffer with one canonical schema.
+
+    "pose_bucket" is the single pose key across the whole pipeline: every producer
+    writes it and every consumer reads it. This helper guarantees the invariant at
+    both seed points so a producer regression cannot raise KeyError deep inside the
+    builder and silently freeze the buffer.
+
+    Returns [] when nothing clears MIN_UNKNOWN_CREATION_QUALITY, which is the same
+    as an empty buffer: builder.is_ready() is False and the track keeps collecting.
+    """
+    seeded = []
+
+    for item in buffer:
+        quality = item.get("quality")
+        if quality is None or quality < MIN_UNKNOWN_CREATION_QUALITY:
+            continue
+
+        seeded.append({
+            "embedding": item["embedding"],
+            "quality": quality,
+            # One key only. A frame with no usable pose is still worth keeping:
+            # is_ready() only needs >= min_poses distinct buckets (1 by default),
+            # and "unknown" keeps the entry usable instead of dropping a face.
+            "pose_bucket": item.get("pose_bucket") or "unknown",
+            "img": item.get("img"),
+            "ts": item.get("ts", time.time()),
+            "eye_quality": item.get("eye_quality"),
+        })
+
+    return seeded
+
+
 def _open_capture(rtsp_url: str):
     if isinstance(rtsp_url, str) and rtsp_url.lower() == "webcam":
         print("[Camera] Using webcam source")
@@ -275,7 +310,15 @@ def _open_capture(rtsp_url: str):
 def start_camera_threads(cameras: List[CameraConfig]) -> None:  
     """
     Spawn one capture thread per camera.
+
+    The BoT-SORT ReID checkpoint is resolved first, so a missing or
+    undownloadable model aborts startup instead of killing every camera thread
+    later from inside model.track(). Raises TrackerAssetError on failure.
     """
+    global TRACKER_YAML
+
+    if TRACKER_YAML:
+        TRACKER_YAML = resolve_tracker_config(TRACKER_YAML)
 
     print(f"[Camera] Starting {len(cameras)} camera threads...")
 
@@ -948,9 +991,7 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                             # Original fallback to UNRECOGNIZED_KNOWN
                             track_state[person_id] = TrackState.UNRECOGNIZED_KNOWN
-                            track_unrecognized_buffer[person_id] = [
-                                x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
-                            ]
+                            track_unrecognized_buffer[person_id] = seed_unknown_buffer(buffer)
                             track_known_buffer.pop(person_id, None)
 
                             log(cam, person_id, "STATE", f"→ UNRECOGNIZED_KNOWN (retry frames={UNRECOGNIZED_MAX_FRAMES})")
@@ -964,7 +1005,14 @@ def _camera_loop(cam: CameraConfig) -> None:
                         buffer.append({
                             "embedding": embedding,
                             "quality": quality,
-                            "pose": pose,
+                            # Key must be "pose_bucket": every consumer of the
+                            # unknown buffer (UniqueFaceRepresentationBuilder.is_ready,
+                            # _trim, build_unknown_payload) reads item["pose_bucket"].
+                            # Writing "pose" here raised KeyError('pose_bucket') on the
+                            # next COLLECTING_UNKNOWN frame, which killed the track
+                            # before builder.add() so the buffer never grew past its
+                            # seeded size and no unknown was ever registered.
+                            "pose_bucket": pose,
                             "img": face_img,
                             "ts": time.time()
                         })
@@ -999,9 +1047,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         # Check if max retry frames exhausted
                         if len(buffer) >= UNRECOGNIZED_MAX_FRAMES:
                             track_state[person_id] = TrackState.COLLECTING_UNKNOWN
-                            track_unknown_buffer[person_id] = [
-                                x for x in buffer if x["quality"] >= MIN_UNKNOWN_CREATION_QUALITY
-                            ]
+                            track_unknown_buffer[person_id] = seed_unknown_buffer(buffer)
                             track_unrecognized_buffer.pop(person_id, None)
 
                             log(cam, person_id, "STATE", f"→ COLLECTING_UNKNOWN after {UNRECOGNIZED_MAX_FRAMES} unrecognized frames")
@@ -1031,8 +1077,29 @@ def _camera_loop(cam: CameraConfig) -> None:
                         camera_role = cam.camera_role
                         buffer = track_unknown_buffer.get(person_id, [])
 
+                        # ---------------- QUALITY GATES ---------------- #
+                        #
+                        # Each gate reports its verdict, then ONE decision point below
+                        # resolves reject-vs-force-create. Previously every gate owned its
+                        # own `continue` and its own counter increment, which made the
+                        # force-create path unreachable:
+                        #   - gate 2's `else: force_create = False` cleared a force_create
+                        #     that gate 1 had just earned,
+                        #   - the gate-3 `for ... else` always ran (no `break` existed) and
+                        #     cancelled the force_create set on its last iteration,
+                        #   - a frame failing two eye metrics counted as two consecutive
+                        #     failures instead of one.
+                        # The audit log now gets an explicit "force_create" stage so a
+                        # forced registration is as traceable as a clean one.
+
+                        # Consecutive frames that failed at least one gate. Reset as soon
+                        # as a frame passes all three.
+                        gate_failures = []
+                        force_create = False
+
                         # ---------------- GATE 1: FACE WIDTH ---------------- #
                         if best_face_width < envConfig.MIN_UNKNOWN_REG_FACE_WIDTH:
+                            gate_failures.append("face_width")
                             log_filter_stage(
                                 cam.code, person_id, camera_role,
                                 filter_stage="face_width",
@@ -1055,7 +1122,17 @@ def _camera_loop(cam: CameraConfig) -> None:
                                     buffer=buffer, builder=builder, camera_role=camera_role
                                 ),
                             )
-                            continue
+                        else:
+                            log_filter_stage(
+                                cam.code, person_id, camera_role,
+                                filter_stage="face_width",
+                                passed=True,
+                                threshold_used=envConfig.MIN_UNKNOWN_REG_FACE_WIDTH,
+                                measured_value=best_face_width,
+                                buffer=buffer,
+                                builder=builder,
+                                force_create=False
+                            )
 
                         # ---------------- GATE 2: EYE SHARPNESS ---------------- #
                         eye_sharpness = best_face.get("eye_sharpness")
@@ -1065,6 +1142,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                             and eye_sharpness is not None
                             and eye_sharpness < min_sharpness
                         ):
+                            gate_failures.append("eye_sharpness")
                             log_filter_stage(
                                 cam.code, person_id, camera_role,
                                 filter_stage="eye_sharpness",
@@ -1087,27 +1165,17 @@ def _camera_loop(cam: CameraConfig) -> None:
                                     buffer=buffer, builder=builder, camera_role=camera_role
                                 ),
                             )
-                            # Track consecutive quality gate failures
-                            fails = track_unknown_quality_fails.get(person_id, 0) + 1
-                            track_unknown_quality_fails[person_id] = fails
-                            if fails >= UNKNOWN_FORCE_CREATE_AFTER:
-                                force_create = True
-                            else:
-                                continue
                         else:
-                            force_create = False
-
-                        # Log passed filter
-                        log_filter_stage(
-                            cam.code, person_id, camera_role,
-                            filter_stage="eye_sharpness",
-                            passed=True,
-                            threshold_used=min_sharpness,
-                            measured_value=eye_sharpness,
-                            buffer=buffer,
-                            builder=builder,
-                            force_create=force_create
-                        )
+                            log_filter_stage(
+                                cam.code, person_id, camera_role,
+                                filter_stage="eye_sharpness",
+                                passed=True,
+                                threshold_used=min_sharpness,
+                                measured_value=eye_sharpness,
+                                buffer=buffer,
+                                builder=builder,
+                                force_create=False
+                            )
 
                         # ---------------- GATE 3: EYE VISIBILITY ---------------- #
                         core = analysis.get("iris_core_brightness")
@@ -1145,6 +1213,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                                 )
                                 log(cam, person_id, "UNKNOWN", f"REJECT eyes not visible: {detail}")
                                 for name, value, limit in reasons:
+                                    gate_failures.append(f"eye_visibility_{name}")
                                     log_filter_stage(
                                         cam.code, person_id, camera_role,
                                         filter_stage=f"eye_visibility_{name}",
@@ -1167,17 +1236,8 @@ def _camera_loop(cam: CameraConfig) -> None:
                                             buffer=buffer, builder=builder, camera_role=camera_role
                                         ),
                                     )
-                                    # Track consecutive quality gate failures
-                                    fails = track_unknown_quality_fails.get(person_id, 0) + 1
-                                    track_unknown_quality_fails[person_id] = fails
-                                    if fails >= UNKNOWN_FORCE_CREATE_AFTER:
-                                        force_create = True
-                                    else:
-                                        continue
-                                else:
-                                    force_create = False
 
-                        # Log passed eye visibility
+                        # Log eye visibility verdict
                         log_filter_stage(
                             cam.code, person_id, camera_role,
                             filter_stage="eye_visibility",
@@ -1188,6 +1248,37 @@ def _camera_loop(cam: CameraConfig) -> None:
                             builder=builder,
                             force_create=force_create
                         )
+
+                        # ---------------- DECISION: reject or force-create ---------------- #
+                        # Counted once per frame, whichever gate(s) failed. After
+                        # UNKNOWN_FORCE_CREATE_AFTER consecutive bad frames the track is
+                        # registered anyway: the alternative is a track parked in
+                        # COLLECTING_UNKNOWN forever with a frozen buffer.
+                        if gate_failures:
+                            fails = track_unknown_quality_fails.get(person_id, 0) + 1
+                            track_unknown_quality_fails[person_id] = fails
+                            force_create = fails >= UNKNOWN_FORCE_CREATE_AFTER
+
+                            log_filter_stage(
+                                cam.code, person_id, camera_role,
+                                filter_stage="force_create",
+                                passed=force_create,
+                                threshold_used=UNKNOWN_FORCE_CREATE_AFTER,
+                                measured_value=fails,
+                                buffer=buffer,
+                                builder=builder,
+                                force_create=force_create,
+                                failed_gates=",".join(gate_failures),
+                            )
+                            log(cam, person_id, "UNKNOWN",
+                                f"gates failed {fails}/{UNKNOWN_FORCE_CREATE_AFTER}"
+                                f" [{', '.join(gate_failures)}]"
+                                f" -> {'FORCE CREATE' if force_create else 'keep collecting'}")
+
+                            if not force_create:
+                                continue
+                        else:
+                            track_unknown_quality_fails.pop(person_id, None)
 
                         buffer = track_unknown_buffer.get(person_id, [])
 
@@ -1341,7 +1432,7 @@ def _camera_loop(cam: CameraConfig) -> None:
                         pose_candidates = {}
 
                         for x in buffer:
-                            p = x["pose_bucket"]
+                            p = x.get("pose_bucket") or "unknown"
                             q = x["quality"]
 
                             if p not in pose_candidates or q > pose_candidates[p]["quality"]:

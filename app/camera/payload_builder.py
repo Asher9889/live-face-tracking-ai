@@ -30,8 +30,7 @@ def _build_pose_data(buffer):
     pose_map = {}
 
     for item in buffer:
-        print(item.keys())
-        pose = item["pose_bucket"]
+        pose = item.get("pose_bucket") or "unknown"
         img = item["img"]
 
         if img is None or img.size == 0:
@@ -81,7 +80,7 @@ def build_unknown_payload(buffer, centroid, cam_code, unknown_id=None, builder=N
 
     if best:
         payload["best_quality"] = float(best["quality"])
-        payload["best_pose"] = best["pose_bucket"]
+        payload["best_pose"] = best.get("pose_bucket") or "unknown"
 
         encoded = _encode_image(best["img"])
         if encoded:

@@ -8,3 +8,8 @@
 venv/
 
 logs/
+
+# Tracker / detection checkpoints fetched at runtime
+*.onnx
+models/*.pt
+app/camera/*.resolved.yaml
