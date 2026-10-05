@@ -26,4 +26,4 @@ gmc_method: none                 # static cameras; sparseOptFlow costs CPU for n
 proximity_thresh: 0.4            # min IoU for a pair to be eligible for appearance matching
 appearance_thresh: 0.7           # strength of appearance evidence vs IoU (tune on footage)
 with_reid: True                  # use detector features as appearance embedding
-model: auto                      # "auto" = reuse detection backbone (no extra download)
+model: yolo26s-reid.onnx                      # "auto" = reuse detection backbone (no extra download)
