@@ -85,7 +85,9 @@ UNKNOWN_FORCE_CREATE_AFTER = int(os.getenv("UNKNOWN_FORCE_CREATE_AFTER", "3"))
 # BoT-SORT config, project-owned. The ultralytics default is used when this is
 # blank, which means with_reid=False — exactly the blind-IoU association that
 # swaps IDs in a crowd. Passing it explicitly keeps the tracker deterministic.
-TRACKER_YAML = os.getenv("TRACKER_YAML", os.path.join(os.path.dirname(os.path.abspath(__file__)), "botsort.yaml"))
+# `or` instead of a getenv default on purpose: TRACKER_YAML="" is set-but-empty,
+# which would otherwise win over the project config and silently disable ReID.
+TRACKER_YAML = os.getenv("TRACKER_YAML") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "botsort.yaml")
 # Person-detection confidence for the tracker (class 0 = person).
 TRACK_CONF = float(os.getenv("TRACK_CONF", "0.25"))
 # YOLO inference size for tracking. Larger catches distant faces in crowds,
@@ -160,8 +162,14 @@ if TRACKER_YAML and os.path.isfile(TRACKER_YAML):
         _TRACK_CFG = yaml.safe_load(_f) or {}
     TRACKER_YAML = os.path.abspath(TRACKER_YAML)
 else:
-    # No project tracker config: fall back to the ultralytics default
-    # (with_reid=False, IoU-only association).
+    # No usable project tracker config. Falling back to the ultralytics default
+    # means with_reid=False (IoU-only association), which silently swaps IDs in a
+    # crowd — so say so loudly rather than degrading quietly.
+    print(
+        f"[Camera] WARNING: tracker config not found at '{TRACKER_YAML}'.\n"
+        f"[Camera] Falling back to the ultralytics default with_reid=False. "
+        f"Identity will churn; restore app/camera/botsort.yaml."
+    )
     _TRACK_CFG = {}
     TRACKER_YAML = ""
 TRACK_BUFFER_FRAMES = int(_TRACK_CFG.get("track_buffer", 30))
