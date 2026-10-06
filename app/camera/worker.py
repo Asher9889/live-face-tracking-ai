@@ -28,7 +28,7 @@ from app.camera.tracker_assets import resolve_tracker_config
 from app.config.config import envConfig
 from app.events.publisher import EventPublisher
 from app.recognition import embedding_store, unknown_embedding_store
-from app.recognition.unknown_creation_log import log_decision as log_unknown_decision, face_metrics
+from app.recognition.unknown_creation_log import log_filter_stage, log_decision
 from app.tracking.track_manager import TrackEventEmitter
 from app.database import redis_client
 
@@ -1168,11 +1168,11 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                             log(cam, person_id, "STATE", f"→ COLLECTING_UNKNOWN after {UNRECOGNIZED_MAX_FRAMES} unrecognized frames")
                             # Log the seeding decision
-                            log_unknown_decision(
+                            log_decision(
                                 "unknown_buffer_seeded",
                                 cam.code,
                                 person_id,
-                                role=cam.camera_role,
+                                camera_role=cam.camera_role,
                                 buffer_size=len(track_unknown_buffer[person_id]),
                                 **face_metrics(
                                     analysis,
@@ -1434,13 +1434,13 @@ def _camera_loop(cam: CameraConfig) -> None:
                         if match:
                             unknown_id = match["unknown_id"]
                             log(cam, person_id, "UNKNOWN", f"EXISTING UNKNOWN MATCHED → {unknown_id}")
-                            log_unknown_decision(
+                            log_decision(
                                 "unknown_matched_existing",
                                 cam.code,
                                 person_id,
+                                camera_role=cam.camera_role,
                                 unknown_id=unknown_id,
                                 similarity=match.get("similarity"),
-                                role=cam.camera_role,
                                 buffer_size=len(buffer),
                                 **face_metrics(
                                     analysis, quality, final_quality, best_face_width
@@ -1449,12 +1449,12 @@ def _camera_loop(cam: CameraConfig) -> None:
                         else:
                             if cam.camera_role != "REGISTER":
                                 log(cam, person_id, "UNKNOWN", f"NO MATCH → NOT CREATING (camera_role={cam.camera_role})")
-                                log_unknown_decision(
+                                log_decision(
                                     "unknown_not_created",
                                     cam.code,
                                     person_id,
+                                    camera_role=cam.camera_role,
                                     reason="camera_role_not_register",
-                                    role=cam.camera_role,
                                     buffer_size=len(buffer),
                                     **face_metrics(
                                         analysis, quality, final_quality, best_face_width
@@ -1473,11 +1473,11 @@ def _camera_loop(cam: CameraConfig) -> None:
 
                             if not unknown_id:
                                 log(cam, person_id, "UNKNOWN", "CREATE FAILED → STAY COLLECTING_UNKNOWN")
-                                log_unknown_decision(
+                                log_decision(
                                     "unknown_create_failed",
                                     cam.code,
                                     person_id,
-                                    role=cam.camera_role,
+                                    camera_role=cam.camera_role,
                                     buffer_size=len(buffer),
                                     **face_metrics(
                                         analysis, quality, final_quality, best_face_width
@@ -1488,12 +1488,12 @@ def _camera_loop(cam: CameraConfig) -> None:
                             print(f"[UNKNOWN CREATED] {unknown_id} for person_id={person_id} at camera {cam.code}")
                             # eye_sharpness here is the current frame's value, not the
                             # best sample's — the builder buffer does not carry it.
-                            log_unknown_decision(
+                            log_decision(
                                 "unknown_registered",
                                 cam.code,
                                 person_id,
+                                camera_role=cam.camera_role,
                                 unknown_id=unknown_id,
-                                role=cam.camera_role,
                                 buffer_size=len(buffer),
                                 **face_metrics(
                                     analysis, quality, final_quality, best_face_width
