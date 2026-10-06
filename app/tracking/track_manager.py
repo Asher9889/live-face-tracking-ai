@@ -336,10 +336,15 @@ class TrackEventEmitter:
         if not track:
             return
 
+        # Extract last 4 digits/chars of unknown_id for client display
+        id_display = str(unknown_id)
+        if len(id_display) > 4:
+            id_display = id_display[-4:]
+
         payload = {
             "camera_code": cam_code,
             "track_id": person_id,
-            "person_id": unknown_id,
+            "person_id": id_display,
             "bbox": track["bbox"],
             "frameTs": track["frameTs"],
             "frame_width": track["frame_width"],
