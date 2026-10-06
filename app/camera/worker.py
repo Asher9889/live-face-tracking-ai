@@ -194,8 +194,7 @@ def format_unknown_label(unknown_id) -> str:
     The full unknown_id stays in the payload's `label` field; this only produces
     the short suffix that is safe to put on screen. The id format comes from the
     Node API, so it is not assumed to be hex, digits, or fixed length:
-      - alphanumeric characters are taken from the END of the id, since that is
-        where a uuid/ObjectId carries its random entropy
+      - last 4 characters of the id are used as the display suffix
       - a pure-digit id is read from the end as digits
       - anything that leaves too little usable signal falls back to "Unknown"
     """
@@ -206,30 +205,11 @@ def format_unknown_label(unknown_id) -> str:
     if not s:
         return "Unknown"
 
-    # Trailing alphanumeric run, ignoring separators like "-" in a uuid.
-    tail = ""
-    for ch in reversed(s):
-        if ch.isalnum():
-            tail = ch + tail
-            if len(tail) == 4:
-                break
-        else:
-            break
+    # Take last 4 characters as the display suffix
+    if len(s) <= 4:
+        return s.upper()
 
-    if not tail:
-        return "Unknown"
-
-    # A 4-char tail that is all one repeated character carries no information
-    # (e.g. a uuid ending in "0000"), so widen the window instead of showing it.
-    if len(tail) == 4 and len(set(tail)) == 1:
-        wider = "".join(ch for ch in reversed(s) if ch.isalnum())[:8]
-        tail = wider[-4:] if len(wider) >= 4 else wider
-
-    # Too weak to distinguish anyone (all zeros/ones); not worth showing.
-    if len(set(tail)) < 2:
-        return "Unknown"
-
-    return f"Unknown {tail.upper()}"
+    return s[-4:].upper()
 
 
 def pick_track_face(faces, person_bbox, cam, person_id):
