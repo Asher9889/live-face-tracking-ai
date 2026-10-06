@@ -23,7 +23,13 @@ fuse_score: True                 # fuse detection score into matching
 
 gmc_method: none                 # static cameras; sparseOptFlow costs CPU for nothing here
 
-proximity_thresh: 0.4            # min IoU for a pair to be eligible for appearance matching
-appearance_thresh: 0.7           # strength of appearance evidence vs IoU (tune on footage)
+proximity_thresh: 0.5            # min IoU for a pair to be eligible for appearance matching
+                                  # (ultralytics default; 0.4 let appearance arbitrate pairs
+                                  # that barely overlap)
+appearance_thresh: 0.85          # docs: raise to avoid identity swaps; 0.85+ for crowds.
+                                  # 0.7 meant a wrong person only needed cos>=0.40 to inherit
+                                  # a bound track's ID and name; 0.85 requires cos>=0.70, so
+                                  # impostor rebinds are rejected and become a fresh unbound ID
 with_reid: True                  # use detector features as appearance embedding
-model: yolo26s-reid.onnx                      # "auto" = reuse detection backbone (no extra download)
+model: auto                       # detector's own features: no second model, no shared
+                                  # encoder lock, no extra inference inside model.track()
